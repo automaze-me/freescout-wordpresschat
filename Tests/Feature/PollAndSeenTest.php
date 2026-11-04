@@ -29,9 +29,9 @@ class PollAndSeenTest extends TestCase
         return [$token ?: $json['token'], $id, Message::find($id)->conversation_id];
     }
 
-    private function agentThread($conversationId, $type = null, $withRow = true, $published = true)
+    private function agentThread($conversationId, $type = null, $withRow = true, $published = true, $agent = null)
     {
-        $agent = $this->adminUser();
+        $agent = $agent ?: $this->adminUser();
         $thread = new Thread();
         $thread->conversation_id = $conversationId;
         $thread->type = $type === null ? Thread::TYPE_MESSAGE : $type;
@@ -84,6 +84,37 @@ class PollAndSeenTest extends TestCase
             $json['conversation']
         );
         $this->assertSame(['level' => 'anonymous', 'account' => false], $json['identity']);
+    }
+
+    public function test_agent_reply_carries_the_agent_photo()
+    {
+        $site = $this->makeSite();
+        list($token, , $conv) = $this->visitorSays($site, 'first');
+        $agent = $this->adminUser();
+        $agent->photo_url = 'agent-photo.jpg';
+        $agent->save();
+        $this->agentThread($conv, null, true, true, $agent);
+
+        $msgs = $this->poll($site, $token)->json()['messages'];
+
+        $this->assertSame($agent->getPhotoUrl(false), $msgs[1]['avatar']);
+        $this->assertStringStartsWith('http', $msgs[1]['avatar']);
+        $this->assertStringContainsString('agent-photo.jpg', $msgs[1]['avatar']);
+    }
+
+    public function test_agent_without_photo_and_visitor_rows_have_no_avatar()
+    {
+        $site = $this->makeSite();
+        list($token, , $conv) = $this->visitorSays($site, 'first');
+        $this->agentThread($conv);
+
+        $msgs = $this->poll($site, $token)->json()['messages'];
+
+        $this->assertArrayHasKey('avatar', $msgs[0]);
+        $this->assertNull($msgs[0]['avatar']);
+        $this->assertSame('agent', $msgs[1]['role']);
+        $this->assertArrayHasKey('avatar', $msgs[1]);
+        $this->assertNull($msgs[1]['avatar']);
     }
 
     public function test_unpublished_reply_and_notes_are_not_returned()

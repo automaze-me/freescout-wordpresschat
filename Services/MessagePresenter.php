@@ -17,9 +17,11 @@ class MessagePresenter
         $thread  = $m->thread;
         $isAgent = (int) $m->direction === Message::DIRECTION_OUT;
         $author  = null;
+        $avatar  = null;
 
         if ($isAgent && $thread && $thread->created_by_user) {
             $author = $thread->created_by_user->first_name;
+            $avatar = self::avatarUrl($thread->created_by_user);
         }
 
         $createdAt = $thread ? $thread->created_at : $m->created_at;
@@ -29,9 +31,28 @@ class MessagePresenter
             'role'       => $isAgent ? 'agent' : 'visitor',
             'text'       => $thread ? self::text($thread->body) : '',
             'author'     => $author,
+            'avatar'     => $avatar,
             'created_at' => $createdAt ? $createdAt->copy()->setTimezone('UTC')->format('Y-m-d\TH:i:s\Z') : null,
             'via'        => (int) $m->via === Message::VIA_EMAIL ? 'email' : 'chat',
         ];
+    }
+
+    /**
+     * The agent's own photo, or null (never the default avatar). The widget
+     * runs on another origin, so a relative URL is made absolute against
+     * the FreeScout base URL.
+     */
+    private static function avatarUrl($user)
+    {
+        $url = (string) $user->getPhotoUrl(false);
+        if ($url === '') {
+            return null;
+        }
+        if (!preg_match('#^https?://#i', $url)) {
+            $url = url($url);
+        }
+
+        return $url;
     }
 
     /**
