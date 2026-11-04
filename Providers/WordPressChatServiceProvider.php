@@ -4,6 +4,8 @@ namespace Modules\WordPressChat\Providers;
 
 use Illuminate\Support\ServiceProvider;
 use Modules\WordPressChat\Listeners\PublishReplyToChat;
+use Modules\WordPressChat\Listeners\RecordCustomerEmail;
+use Modules\WordPressChat\Services\IdentityLineItem;
 use Modules\WordPressChat\WordPressChat;
 
 class WordPressChatServiceProvider extends ServiceProvider
@@ -84,5 +86,19 @@ class WordPressChatServiceProvider extends ServiceProvider
         // After core's undo window, mark the newest agent reply as published
         // so the widget's poll may show it.
         \Eventy::addAction('chat_conversation.send_reply', [new PublishReplyToChat(), 'handle'], 20, 3);
+
+        // A customer's email in a chat conversation cuts off unverified browsers.
+        \Eventy::addAction('conversation.customer_replied', [new RecordCustomerEmail(), 'handle'], 20, 3);
+
+        // Core renders a line item only through getActionText(), which has no
+        // branch for our NULL action_type and falls through to this filter.
+        \Eventy::addFilter('thread.action_text', function ($didThis, $thread, $conversationNumber = null, $escape = true, $viewedByUser = null) {
+            if ((int) $thread->type === \App\Thread::TYPE_LINEITEM
+                && $thread->getMeta(IdentityLineItem::LINEITEM_META)) {
+                return $thread->body;
+            }
+
+            return $didThis;
+        }, 20, 5);
     }
 }
