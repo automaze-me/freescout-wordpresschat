@@ -11,6 +11,7 @@ Route::group([
     Route::post('/wordpress-chat/api/v1/sites/{site}/messages', 'ChatController@send')->name('wordpresschat.api.send')->where('site', $site);
     Route::get('/wordpress-chat/api/v1/sites/{site}/messages', 'ChatController@index')->name('wordpresschat.api.index')->where('site', $site);
     Route::post('/wordpress-chat/api/v1/sites/{site}/seen', 'ChatController@seen')->name('wordpresschat.api.seen')->where('site', $site);
+    Route::post('/wordpress-chat/api/v1/sites/{site}/identity', 'IdentityController@identify')->name('wordpresschat.api.identity')->where('site', $site);
     // Preflight: Cors short-circuits OPTIONS with 204 before the closure runs.
     Route::options('/wordpress-chat/api/v1/sites/{site}/{any}', function () {
         return response('', 204);
