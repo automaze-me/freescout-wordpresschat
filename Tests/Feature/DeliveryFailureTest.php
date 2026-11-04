@@ -2,9 +2,13 @@
 
 namespace Modules\WordPressChat\Tests\Feature;
 
+use App\Console\Commands\FetchEmails;
 use App\Conversation;
+use App\Mailbox;
 use App\SendLog;
 use App\Thread;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Modules\WordPressChat\Entities\ConversationState;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Services\DueEmails;
@@ -17,6 +21,26 @@ use Modules\WordPressChat\Tests\TestCase;
  */
 class DeliveryFailureTest extends TestCase
 {
+    /**
+     * The headers of a real Postfix bounce (RFC 3464 DSN), as FetchEmails
+     * stores them on the thread: Auto-Submitted makes core's
+     * isAutoResponder() true, and multipart/report, the MAILER-DAEMON
+     * sender and the empty Return-Path each make FetchEmails flag a bounce.
+     */
+    const BOUNCE_HEADERS = "Return-Path: <>\n"
+        ."Delivered-To: support@example.test\n"
+        ."Date: Wed, 4 Nov 2026 12:00:00 +0000 (UTC)\n"
+        ."From: MAILER-DAEMON@mx.example.test (Mail Delivery System)\n"
+        ."Subject: Undelivered Mail Returned to Sender\n"
+        ."To: support@example.test\n"
+        ."Auto-Submitted: auto-replied\n"
+        ."MIME-Version: 1.0\n"
+        ."Content-Type: multipart/report; report-type=delivery-status;\n"
+        ."\tboundary=\"8A1B2C3D4E.1793793600/mx.example.test\"\n"
+        ."Message-Id: <20261104120000.8A1B2C3D4E@mx.example.test>";
+
+    const BOUNCE_FROM = 'mailer-daemon@mx.example.test';
+
     private function chat(): array
     {
         $site = $this->makeSite();
@@ -36,15 +60,76 @@ class DeliveryFailureTest extends TestCase
         $thread->status = Thread::STATUS_ACTIVE;
         $thread->state = Thread::STATE_PUBLISHED;
         $thread->body = '<p>Delivery failed</p>';
+        $thread->from = self::BOUNCE_FROM;
+        $thread->headers = self::BOUNCE_HEADERS;
         $thread->source_type = Thread::SOURCE_TYPE_EMAIL;
         $thread->source_via = Thread::PERSON_CUSTOMER;
         $thread->customer_id = $conversation->customer_id;
         $thread->created_by_customer_id = $conversation->customer_id;
-        $thread->save();
+        // As FetchEmails::saveCustomerThread() flags it before the events.
         $thread->updateSendStatusData(['is_bounce' => true]);
         $thread->save();
 
         return $thread;
+    }
+
+    /**
+     * Core's own bounce processing (FetchEmails, minus IMAP): the bounce is
+     * saved as a customer thread with the flag, then saveBounceData() finds
+     * the bounced reply by the Message-ID core gave its email and marks it.
+     */
+    private function coreBounce(Mailbox $mailbox, Thread $bounced): Thread
+    {
+        Queue::fake();
+        $fetch = new FetchEmails();
+
+        $bounce = $fetch->saveCustomerThread(
+            $mailbox,
+            '20261104120000.'.bin2hex(random_bytes(5)).'@mx.example.test',
+            null,
+            self::BOUNCE_FROM,
+            [$mailbox->email],
+            [],
+            [],
+            'Undelivered Mail Returned to Sender',
+            '<p>Delivery to anna@example.test failed permanently.</p>',
+            [],
+            self::BOUNCE_HEADERS,
+            now(),
+            true
+        );
+        $fetch->saveBounceData($bounce, $bounced->getMessageId($mailbox), self::BOUNCE_FROM);
+
+        return $bounce;
+    }
+
+    /** The conversation as core's forward leaves its copy: channel kept, type email. */
+    private function forwardedCopy(Conversation $conversation): Conversation
+    {
+        $copy = $conversation->replicate();
+        $copy->type = Conversation::TYPE_EMAIL;
+        $copy->threads_count = 0;
+        $copy->customer_email = 'boss@example.test';
+        $copy->subject = 'Fwd: '.$conversation->subject;
+        $copy->save();
+
+        return Conversation::find($copy->id);
+    }
+
+    /** A job row in the database queue, $age seconds past its available_at. */
+    private function queuedJob(string $queue, int $age, bool $reserved = false): void
+    {
+        config(['queue.default' => 'database']);
+        $now = time();
+
+        DB::table(config('queue.connections.database.table', 'jobs'))->insert([
+            'queue'        => $queue,
+            'payload'      => '{}',
+            'attempts'     => 0,
+            'reserved_at'  => $reserved ? $now : null,
+            'available_at' => $now - $age,
+            'created_at'   => $now - $age,
+        ]);
     }
 
     /** An agent reply with no row, created $minutes minutes ago. */
@@ -204,5 +289,203 @@ class DeliveryFailureTest extends TestCase
         $response->assertStatus(200);
         $texts = array_map('trim', array_column($response->json()['messages'], 'text'));
         $this->assertNotContains('Reply', $texts);
+    }
+
+    /**
+     * Final review I1: a real bounce carries Auto-Submitted, so core's
+     * isAutoResponder() is true for it too. It must still get its item.
+     */
+    public function test_bounce_with_real_bounce_headers_gets_one_red_line_item()
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $bounce = $this->bounceThread($conversation);
+        $this->assertTrue($bounce->isAutoResponder());
+        $this->assertTrue($bounce->isBounce());
+
+        \Eventy::action('conversation.customer_replied', $conversation, $bounce, $conversation->customer);
+
+        $items = $this->redItems($conversation);
+        $this->assertCount(1, $items);
+        $this->assertSame(
+            'The email to anna@example.test bounced. The visitor may not have received the reply.',
+            $items[0]->getActionText('', false)
+        );
+        $this->assertSame(0, Message::where('thread_id', $bounce->id)->count());
+        $this->assertNull(ConversationState::of($conversation)->cutoff_message_id);
+    }
+
+    public function test_auto_reply_that_is_no_bounce_gets_nothing()
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $auto = $this->bounceThread($conversation);
+        $auto->from = 'anna@example.test';
+        $auto->headers = "From: Anna <anna@example.test>\nSubject: Out of office\nAuto-Submitted: auto-replied\nX-Autoreply: yes";
+        $auto->send_status_data = null;
+        $auto->save();
+        $this->assertTrue($auto->isAutoResponder());
+        $this->assertFalse($auto->isBounce());
+
+        \Eventy::action('conversation.customer_replied', $conversation, $auto, $conversation->customer);
+
+        $this->assertCount(0, $this->redItems($conversation));
+        $this->assertSame(0, Message::where('thread_id', $auto->id)->count());
+        $this->assertNull(ConversationState::of($conversation)->cutoff_message_id);
+    }
+
+    public function test_bounce_without_customer_email_names_the_customers_address()
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $conversation->customer->addEmail('anna.main@example.test');
+        $conversation->customer_email = '';
+        $conversation->save();
+        $bounce = $this->bounceThread($conversation);
+
+        \Eventy::action('conversation.customer_replied', $conversation, $bounce, $conversation->customer);
+
+        $items = $this->redItems($conversation);
+        $this->assertCount(1, $items);
+        $this->assertSame(
+            'The email to anna.main@example.test bounced. The visitor may not have received the reply.',
+            $items[0]->getActionText('', false)
+        );
+    }
+
+    public function test_bounce_without_any_address_names_none()
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $conversation->customer_email = '';
+        $conversation->save();
+        $bounce = $this->bounceThread($conversation);
+
+        \Eventy::action('conversation.customer_replied', $conversation, $bounce, $conversation->customer);
+
+        $items = $this->redItems($conversation);
+        $this->assertCount(1, $items);
+        $this->assertSame(
+            'An email to the visitor bounced. The visitor may not have received the reply.',
+            $items[0]->getActionText('', false)
+        );
+    }
+
+    /**
+     * Final review I1, core's real path: FetchEmails never threads a bounce
+     * into the conversation it bounced from (its reply lookup is skipped for
+     * bounces), so `conversation.customer_replied` never fires there. The
+     * bounce lands in a new email conversation, and saveBounceData() marks
+     * the bounced reply and logs STATUS_DELIVERY_ERROR.
+     */
+    public function test_core_bounce_processing_writes_one_red_line_item()
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $conversation->status = Conversation::STATUS_PENDING;
+        $conversation->save();
+        $reply = $this->agentThread($conversation, 5);
+
+        $bounce = $this->coreBounce($conversation->mailbox, $reply);
+
+        $this->assertNotEquals((int) $conversation->id, (int) $bounce->conversation_id);
+        $this->assertSame(SendLog::STATUS_DELIVERY_ERROR, (int) $reply->fresh()->send_status);
+
+        $items = $this->redItems($conversation);
+        $this->assertCount(1, $items);
+        $this->assertSame(
+            'The email to anna@example.test bounced. The visitor may not have received the reply.',
+            $items[0]->getActionText('', false)
+        );
+        $this->assertSame(Conversation::STATUS_ACTIVE, (int) Conversation::find($conversation->id)->status);
+        $this->assertSame('anna@example.test', Conversation::find($conversation->id)->customer_email);
+        $this->assertSame(0, Message::where('thread_id', $bounce->id)->count());
+        $this->assertNull(ConversationState::of($conversation)->cutoff_message_id);
+
+        // Later saves of the bounced reply add nothing.
+        $again = $reply->fresh();
+        $again->body = '<p>Reply, edited</p>';
+        $again->save();
+        $this->assertCount(1, $this->redItems($conversation));
+    }
+
+    /** A bounce that did reach customer_replied here is noted once, not again by its send log. */
+    public function test_bounce_seen_by_both_paths_gets_one_item()
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $reply = $this->agentThread($conversation, 5);
+        $bounce = $this->bounceThread($conversation);
+
+        \Eventy::action('conversation.customer_replied', $conversation, $bounce, $conversation->customer);
+        (new FetchEmails())->saveBounceData($bounce, $reply->getMessageId($conversation->mailbox), self::BOUNCE_FROM);
+
+        $this->assertSame(SendLog::STATUS_DELIVERY_ERROR, (int) $reply->fresh()->send_status);
+        $this->assertCount(1, $this->redItems($conversation));
+    }
+
+    /** Final review M1: core's forward keeps channel 106 on its email copy. */
+    public function test_bounce_from_a_forwarded_copy_gets_nothing()
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $copy = $this->forwardedCopy($conversation);
+        $reply = $this->agentThread($copy, 5);
+
+        $this->coreBounce($copy->mailbox, $reply);
+
+        $this->assertSame(SendLog::STATUS_DELIVERY_ERROR, (int) $reply->fresh()->send_status);
+        $this->assertCount(0, $this->redItems($copy));
+        $this->assertCount(0, $this->redItems($conversation));
+    }
+
+    public function test_forwarded_copy_is_never_marked_lost()
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $copy = $this->forwardedCopy($conversation);
+        $thread = $this->agentThread($copy, 120);
+
+        $this->assertSame(0, DueEmails::markLost());
+        $this->assertSame(0, Message::where('thread_id', $thread->id)->count());
+        $this->assertCount(0, $this->redItems($copy));
+    }
+
+    /**
+     * Final review I4: while the queue is backed up, a reply's publish job
+     * (core's 15 s job on `default`) has not run yet. Marking it lost then
+     * would make PublishReplyToChat skip it forever.
+     */
+    public function test_queue_backlog_skips_lost_marking()
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $thread = $this->agentThread($conversation, 120);
+        $this->queuedJob('default', 1200);
+
+        $this->assertSame(0, DueEmails::markLost());
+        $this->assertSame(0, Message::where('thread_id', $thread->id)->count());
+        $this->assertCount(0, $this->redItems($conversation));
+    }
+
+    public static function backlogFree(): array
+    {
+        return [
+            'reserved'     => ['default', 1200, true],
+            'emails queue' => ['emails', 1200, false],
+            'fresh'        => ['default', 300, false],
+        ];
+    }
+
+    /** @dataProvider backlogFree */
+    public function test_jobs_that_are_no_backlog_do_not_stop_lost_marking(string $queue, int $age, bool $reserved)
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $thread = $this->agentThread($conversation, 120);
+        $this->queuedJob($queue, $age, $reserved);
+
+        $this->assertSame(1, DueEmails::markLost());
+        $this->assertNotNull(Message::where('thread_id', $thread->id)->value('lost_at'));
+    }
+
+    public function test_backlog_is_only_read_from_a_database_queue()
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $thread = $this->agentThread($conversation, 120);
+        $this->queuedJob('default', 1200);
+        config(['queue.default' => 'sync']);
+
+        $this->assertSame(1, DueEmails::markLost());
     }
 }

@@ -8,6 +8,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Modules\WordPressChat\Entities\ConversationState;
 use Modules\WordPressChat\Entities\Message;
+use Modules\WordPressChat\Services\DueEmails;
 use Modules\WordPressChat\Services\FailureLineItem;
 use Modules\WordPressChat\Services\IdentityLineItem;
 use Modules\WordPressChat\WordPressChat;
@@ -23,7 +24,14 @@ use Modules\WordPressChat\WordPressChat;
  * writing: core files them as customer threads too, but they get no row and
  * no cut-off, so a mistyped address or an absent visitor never locks the
  * chat. A bounce gets one red failure line item (Ruling D9); an auto-reply
- * is ignored entirely.
+ * is ignored entirely. The bounce check comes first: a real bounce carries
+ * `Auto-Submitted: auto-replied` (Postfix, Exim, Gmail), which makes core's
+ * isAutoResponder() true for it as well.
+ *
+ * Core itself never threads a bounce it detected into the conversation it
+ * bounced from (FetchEmails skips its reply lookup for bounces), so in core
+ * the bounce branch here only runs when another module routes a bounce in.
+ * Core's own path is RecordBounce, on the send log saveBounceData() writes.
  *
  * The row and the cut-off are written in one transaction, so an email row
  * never exists without its cut-off. Its unique-violation catch sits outside
@@ -43,7 +51,6 @@ class RecordCustomerEmail
                 || !$thread instanceof Thread
                 || (int) $thread->type !== Thread::TYPE_CUSTOMER
                 || (int) $thread->state !== Thread::STATE_PUBLISHED
-                || $thread->isAutoResponder()
                 || Message::where('thread_id', $thread->id)->exists()) {
                 return;
             }
@@ -55,11 +62,13 @@ class RecordCustomerEmail
                     $thread->setMeta(self::BOUNCE_NOTED_META, true);
                     $thread->save();
 
-                    FailureLineItem::create($conversation, __('The email to :email bounced. The visitor may not have received the reply.', [
-                        'email' => (string) $conversation->customer_email,
-                    ]));
+                    self::noteBounce($conversation);
                 }
 
+                return;
+            }
+
+            if ($thread->isAutoResponder()) {
                 return;
             }
 
@@ -106,5 +115,24 @@ class RecordCustomerEmail
                 'error'           => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * The bounce line item (Ruling D9). It names the address the email went
+     * to: customer_email, or the customer's main email when that column is
+     * empty (DueEmails::address(), the job's own choice). With no address at
+     * all it says so without one, never "The email to  bounced".
+     */
+    public static function noteBounce(Conversation $conversation): void
+    {
+        $email = DueEmails::address($conversation);
+
+        if ($email === null) {
+            $email = trim((string) $conversation->customer_email);
+        }
+
+        FailureLineItem::create($conversation, $email !== ''
+            ? __('The email to :email bounced. The visitor may not have received the reply.', ['email' => $email])
+            : __('An email to the visitor bounced. The visitor may not have received the reply.'));
     }
 }

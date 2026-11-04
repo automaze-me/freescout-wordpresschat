@@ -6,6 +6,7 @@ use Illuminate\Support\ServiceProvider;
 use Modules\WordPressChat\Console\SendDueEmails;
 use Modules\WordPressChat\Listeners\PublishReplyToChat;
 use Modules\WordPressChat\Listeners\RouteReplyChannel;
+use Modules\WordPressChat\Listeners\RecordBounce;
 use Modules\WordPressChat\Listeners\RecordCustomerEmail;
 use Modules\WordPressChat\Services\ConversationHeader;
 use Modules\WordPressChat\Services\DeliveryMarker;
@@ -120,9 +121,10 @@ class WordPressChatServiceProvider extends ServiceProvider
 
         // The "Send via" picker under the reply editor (spec 8.3). Core fires
         // this hook outside the reply form; Public/js/wordpresschat.js copies
-        // the choice into the form on submit.
+        // the choice into the form on submit. Chat conversations only: core's
+        // forward keeps the channel on its email copy.
         \Eventy::addAction('reply_form.after', function ($conversation) {
-            if ((int) $conversation->channel !== WordPressChat::CHANNEL) {
+            if ((int) $conversation->channel !== WordPressChat::CHANNEL || !$conversation->isChat()) {
                 return;
             }
 
@@ -162,6 +164,11 @@ class WordPressChatServiceProvider extends ServiceProvider
 
         // A customer's email in a chat conversation cuts off unverified browsers.
         \Eventy::addAction('conversation.customer_replied', [new RecordCustomerEmail(), 'handle'], 20, 3);
+
+        // A bounce of one of our emails: core logs it on the bounced reply.
+        \App\SendLog::created(function ($log) {
+            RecordBounce::handle($log);
+        });
 
         // Pill, identity badge and order-only warning. In chat mode core hides
         // after_subject_block in a collapsed accordion, so chat mode renders

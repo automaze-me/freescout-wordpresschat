@@ -252,6 +252,30 @@ class AgentEmailChoiceTest extends TestCase
         Queue::assertNothingPushed();
     }
 
+    /** Final review M1: core's forward keeps channel 106 on its email copy. */
+    public function test_forwarded_copy_is_neither_captured_nor_intercepted()
+    {
+        list(, , $conversation) = $this->chat();
+        $copy = $conversation->replicate();
+        $copy->type = Conversation::TYPE_EMAIL;
+        $copy->threads_count = 0;
+        $copy->save();
+        $copy = Conversation::find($copy->id);
+
+        $thread = $this->capture($this->agentThread($copy), 'email');
+        $this->assertNull($this->metaOf($thread));
+
+        $marked = $this->agentThread($copy);
+        $marked->setMeta(ReplyChannel::META, 'email');
+        $marked->save();
+        $marked = Thread::find($marked->id);
+
+        Queue::fake();
+        $this->assertFalse($this->skip($copy, $marked));
+        Queue::assertNothingPushed();
+        $this->assertNull(Message::where('thread_id', $marked->id)->first());
+    }
+
     public function test_skip_already_true_is_kept()
     {
         list(, , $conversation) = $this->chat();

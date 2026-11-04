@@ -33,6 +33,9 @@ class DueEmails
      */
     const STALE_SENDING = 600;
 
+    /** Seconds a runnable job may wait before the queue counts as backed up (markLost()). */
+    const BACKLOG_AGE = 600;
+
     /**
      * Where the conversation's email goes: its customer_email when that is
      * a valid address, otherwise the customer's main email when that is,
@@ -246,15 +249,31 @@ class DueEmails
      * violation, caught here outside any transaction (PostgreSQL aborts one
      * on a failed statement); only the run that inserted writes the item.
      *
+     * Only website-chat conversations: core's forward keeps the channel on
+     * its email copy (Conversation::TYPE_EMAIL), which has no chat.
+     *
+     * While the queue is backed up, nothing is marked (backlog()): a reply's
+     * row is written by core's 15 s publish job on the `default` queue, and
+     * this sweep runs from the scheduler before a restarted worker drains
+     * it. A reply marked lost then would be skipped by PublishReplyToChat
+     * forever.
+     *
      * Returns the number of replies marked. $now is for tests only.
      */
     public static function markLost(?Carbon $now = null): int
     {
         $now = $now ? $now->copy() : now();
 
+        if (self::backlog($now)) {
+            \Log::info('[WordPressChat] Lost replies not checked: the queue has jobs waiting more than '.self::BACKLOG_AGE.' s');
+
+            return 0;
+        }
+
         $threads = Thread::query()
             ->join('conversations', 'conversations.id', '=', 'threads.conversation_id')
             ->where('conversations.channel', WordPressChat::CHANNEL)
+            ->where('conversations.type', Conversation::TYPE_CHAT)
             ->where('threads.type', Thread::TYPE_MESSAGE)
             ->where('threads.state', Thread::STATE_PUBLISHED)
             ->where(function ($q) {
@@ -302,5 +321,28 @@ class DueEmails
         }
 
         return $marked;
+    }
+
+    /**
+     * Whether the database queue holds a job, on any queue but `emails`,
+     * that could have run more than BACKLOG_AGE seconds ago and has not
+     * started: the worker is down or far behind. `emails` is left out: dev
+     * never consumes it, and a slow mail server must not stop this check.
+     * False for every other queue driver.
+     */
+    private static function backlog(Carbon $now): bool
+    {
+        $config = config('queue.connections.'.config('queue.default'));
+
+        if (!is_array($config) || ($config['driver'] ?? null) !== 'database') {
+            return false;
+        }
+
+        return DB::connection($config['connection'] ?? null)
+            ->table($config['table'] ?? 'jobs')
+            ->whereNull('reserved_at')
+            ->where('queue', '<>', 'emails')
+            ->where('available_at', '<', $now->getTimestamp() - self::BACKLOG_AGE)
+            ->exists();
     }
 }

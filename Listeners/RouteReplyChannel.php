@@ -11,6 +11,8 @@ use Modules\WordPressChat\WordPressChat;
 
 /**
  * The agent's "send by email" choice (spec §8.3): a capture/intercept pair.
+ * Website-chat conversations only (channel and chat type): core's forward
+ * keeps the channel on its email copy, which core emails itself.
  *
  * capture() runs while the agent's request is saved and writes the choice
  * onto the thread's meta; intercept() runs later, in core's
@@ -39,7 +41,9 @@ class RouteReplyChannel
 
         $conversation = Conversation::find($thread->conversation_id);
 
-        if (!$conversation || (int) $conversation->channel !== WordPressChat::CHANNEL) {
+        if (!$conversation
+            || (int) $conversation->channel !== WordPressChat::CHANNEL
+            || !$conversation->isChat()) {
             return;
         }
 
@@ -63,7 +67,9 @@ class RouteReplyChannel
      */
     public static function intercept($skip, Conversation $conversation, $replies)
     {
-        if ($skip || (int) $conversation->channel !== WordPressChat::CHANNEL) {
+        if ($skip
+            || (int) $conversation->channel !== WordPressChat::CHANNEL
+            || !$conversation->isChat()) {
             return $skip;
         }
 

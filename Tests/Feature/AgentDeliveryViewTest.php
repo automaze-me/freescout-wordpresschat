@@ -117,6 +117,19 @@ class AgentDeliveryViewTest extends TestCase
         $this->assertSame('', trim($this->picker($conversation)));
     }
 
+    /** Final review M1: core's forward keeps channel 106 on its email copy. */
+    public function test_no_picker_on_a_forwarded_copy()
+    {
+        $copy = $this->chat()->replicate();
+        $copy->type = Conversation::TYPE_EMAIL;
+        $copy->threads_count = 0;
+        $copy->save();
+        $copy = Conversation::find($copy->id);
+        $this->assertSame(\Modules\WordPressChat\WordPressChat::CHANNEL, (int) $copy->channel);
+
+        $this->assertSame('', trim($this->picker($copy)));
+    }
+
     // ---- Markers ----
 
     public static function markerCases(): array
