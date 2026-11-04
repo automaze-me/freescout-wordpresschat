@@ -121,7 +121,7 @@ class SitesController extends Controller
         $this->validate($request, [
             'name'              => 'required|max:100',
             'url'               => 'required|max:255',
-            'mailbox_id'        => 'required|exists:mailboxes,id',
+            'mailbox_id'        => 'bail|required|integer|min:1|max:2147483647|exists:mailboxes,id',
             'fallback_delay'    => 'nullable|integer|min:30|max:3600',
             'max_attachment_mb' => 'nullable|integer|min:1|max:50',
         ]);

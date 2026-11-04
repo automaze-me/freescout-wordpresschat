@@ -7,14 +7,11 @@ use Modules\WordPressChat\Tests\TestCase;
 
 class SitesAdminTest extends TestCase
 {
-    private function makeSite(): Site
+    private function adminSite(): Site
     {
-        $site = new Site([
-            'name'       => 'Shop',
-            'url'        => 'https://shop.example.com',
-            'origin'     => 'https://shop.example.com',
-            'mailbox_id' => $this->testMailbox()->id,
-            'public_id'  => bin2hex(random_bytes(16)),
+        $site = $this->makeSite([
+            'url'    => 'https://shop.example.com',
+            'origin' => 'https://shop.example.com',
         ]);
         $site->setSecret('old-secret');
         $site->save();
@@ -25,7 +22,7 @@ class SitesAdminTest extends TestCase
     public function test_regular_user_gets_403_on_every_route()
     {
         $user = $this->regularUser();
-        $site = $this->makeSite();
+        $site = $this->adminSite();
         $id   = $site->id;
 
         $this->actingAs($user)->get('/wordpress-chat/sites')->assertStatus(403);
@@ -42,7 +39,7 @@ class SitesAdminTest extends TestCase
     public function test_ids_above_the_integer_range_are_404()
     {
         $admin = $this->adminUser();
-        $this->makeSite();
+        $this->adminSite();
 
         foreach (['2147483648', '9999999999', '99999999999'] as $id) {
             $this->actingAs($admin)->get("/wordpress-chat/sites/$id/edit")->assertStatus(404);
@@ -58,7 +55,7 @@ class SitesAdminTest extends TestCase
     public function test_admin_can_view_pages()
     {
         $admin = $this->adminUser();
-        $site  = $this->makeSite();
+        $site  = $this->adminSite();
 
         $html = $this->actingAs($admin)->get('/wordpress-chat/sites')->assertStatus(200)->getContent();
         $this->assertStringContainsString('Shop', $html);
@@ -105,7 +102,7 @@ class SitesAdminTest extends TestCase
     public function test_update_changes_fields_but_not_credentials()
     {
         $admin = $this->adminUser();
-        $site  = $this->makeSite();
+        $site  = $this->adminSite();
 
         $this->actingAs($admin)->post("/wordpress-chat/sites/{$site->id}", [
             'name'             => 'Renamed',
@@ -126,7 +123,7 @@ class SitesAdminTest extends TestCase
     public function test_regenerate_secret_changes_it()
     {
         $admin = $this->adminUser();
-        $site  = $this->makeSite();
+        $site  = $this->adminSite();
 
         $this->actingAs($admin)->post("/wordpress-chat/sites/{$site->id}/secret");
 
@@ -138,10 +135,29 @@ class SitesAdminTest extends TestCase
     public function test_delete_removes_site()
     {
         $admin = $this->adminUser();
-        $site  = $this->makeSite();
+        $site  = $this->adminSite();
 
         $this->actingAs($admin)->post("/wordpress-chat/sites/{$site->id}/delete");
 
         $this->assertSame(0, Site::count());
+    }
+
+    public function test_non_numeric_mailbox_id_is_a_validation_error()
+    {
+        $admin = $this->adminUser();
+        $before = Site::count();
+
+        foreach (['abc', '99999999999'] as $value) {
+            $this->actingAs($admin)->from('/wordpress-chat/sites/create')
+                ->post('/wordpress-chat/sites', [
+                    'name'       => 'Shop',
+                    'url'        => 'https://shop.example.com',
+                    'mailbox_id' => $value,
+                ])
+                ->assertRedirect('/wordpress-chat/sites/create')
+                ->assertSessionHasErrors('mailbox_id');
+        }
+
+        $this->assertSame($before, Site::count());
     }
 }

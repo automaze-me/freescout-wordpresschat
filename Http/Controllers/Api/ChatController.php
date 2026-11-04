@@ -60,6 +60,11 @@ class ChatController extends Controller
         }
 
         $text = $request->input('text');
+
+        if (is_string($text) && !mb_check_encoding($text, 'UTF-8')) {
+            return $this->invalid('text');
+        }
+
         $text = is_string($text) ? trim(self::stripControlChars($text)) : '';
         $length = mb_strlen($text, 'UTF-8');
 

@@ -4,6 +4,7 @@ namespace Modules\WordPressChat\Tests;
 
 use App\Attachment;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Modules\WordPressChat\Entities\Site;
 use Tests\TestCase as CoreTestCase;
 
 abstract class TestCase extends CoreTestCase
@@ -124,5 +125,78 @@ abstract class TestCase extends CoreTestCase
     protected function testMailbox(): \App\Mailbox
     {
         return factory(\App\Mailbox::class)->create();
+    }
+
+    /** A site with a random public id, a secret and a fresh mailbox. $attrs override any column. */
+    protected function makeSite(array $attrs = []): Site
+    {
+        $site = new Site(array_merge([
+            'name'       => 'Shop',
+            'url'        => 'https://shop.test/',
+            'origin'     => 'https://shop.test',
+            'mailbox_id' => $this->testMailbox()->id,
+            'public_id'  => bin2hex(random_bytes(16)),
+        ], $attrs));
+        $site->setSecret('s');
+        $site->save();
+
+        return $site;
+    }
+
+    /**
+     * Calls a public chat API route of $site as the widget would: with the
+     * site's Origin, JSON accepted, and the visitor's token when given.
+     */
+    protected function api(string $method, Site $site, string $path, ?string $token = null, $data = null, array $headers = []): \Illuminate\Foundation\Testing\TestResponse
+    {
+        $server = [
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_ORIGIN'  => $site->origin,
+            'HTTP_ACCEPT'  => 'application/json',
+        ];
+        if ($token !== null) {
+            $server['HTTP_X_CHAT_TOKEN'] = $token;
+        }
+        foreach ($headers as $name => $value) {
+            $server['HTTP_'.strtoupper(str_replace('-', '_', $name))] = $value;
+        }
+
+        return $this->call(
+            $method,
+            '/wordpress-chat/api/v1/sites/'.$site->public_id.$path,
+            [], [], [], $server,
+            $data === null ? null : json_encode($data)
+        );
+    }
+
+    /** A chat token the way the widget makes one: 32 random bytes, base64url, no padding. */
+    protected function newChatToken(): string
+    {
+        return rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+    }
+
+    /**
+     * Starts a chat with a tokenless first send. Returns token, session,
+     * conversation and the raw response.
+     */
+    protected function startChat(Site $site, string $text = 'Hello', array $body = []): array
+    {
+        $new = $this->newChatToken();
+        $response = $this->api('POST', $site, '/messages', null, array_merge([
+            'text'              => $text,
+            'client_message_id' => bin2hex(random_bytes(8)),
+            'new_token'         => $new,
+        ], $body));
+        $response->assertStatus(201);
+
+        $token = $response->json()['token'];
+        $message = \Modules\WordPressChat\Entities\Message::find($response->json()['message']['id']);
+
+        return [
+            'token'        => $token,
+            'session'      => \Modules\WordPressChat\Entities\Session::find($message->session_id),
+            'conversation' => \App\Conversation::find($message->conversation_id),
+            'response'     => $response,
+        ];
     }
 }

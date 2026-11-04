@@ -9,21 +9,6 @@ use Modules\WordPressChat\Tests\TestCase;
 
 class ApiFoundationTest extends TestCase
 {
-    private function site($publicId, $origin = 'https://shop.test')
-    {
-        $site = new Site([
-            'name'       => 'Shop',
-            'url'        => $origin,
-            'origin'     => $origin,
-            'mailbox_id' => $this->testMailbox()->id,
-            'public_id'  => $publicId,
-        ]);
-        $site->setSecret('s');
-        $site->save();
-
-        return $site;
-    }
-
     private function url($publicId, $path = 'messages')
     {
         return '/wordpress-chat/api/v1/sites/'.$publicId.'/'.$path;
@@ -47,7 +32,7 @@ class ApiFoundationTest extends TestCase
     public function test_preflight_from_site_origin_gets_cors_headers()
     {
         $id = str_repeat('a', 32);
-        $this->site($id);
+        $this->makeSite(['public_id' => $id]);
 
         $response = $this->call('OPTIONS', $this->url($id), [], [], [], ['HTTP_ORIGIN' => 'https://shop.test']);
 
@@ -62,7 +47,7 @@ class ApiFoundationTest extends TestCase
     public function test_foreign_origin_is_403()
     {
         $id = str_repeat('a', 32);
-        $this->site($id);
+        $this->makeSite(['public_id' => $id]);
 
         $response = $this->call('GET', $this->url($id), [], [], [], ['HTTP_ORIGIN' => 'https://evil.test']);
 
@@ -73,7 +58,7 @@ class ApiFoundationTest extends TestCase
     public function test_error_responses_carry_cors_headers()
     {
         $id = str_repeat('a', 32);
-        $this->site($id);
+        $this->makeSite(['public_id' => $id]);
 
         $response = $this->call('GET', $this->url($id), [], [], [], [
             'HTTP_ORIGIN'        => 'https://shop.test',
@@ -87,7 +72,7 @@ class ApiFoundationTest extends TestCase
     public function test_request_without_origin_passes_without_cors_headers()
     {
         $id = str_repeat('a', 32);
-        $this->site($id);
+        $this->makeSite(['public_id' => $id]);
 
         $response = $this->call('GET', $this->url($id));
 
@@ -97,8 +82,8 @@ class ApiFoundationTest extends TestCase
 
     public function test_token_of_other_site_does_not_resolve()
     {
-        $a = $this->site(str_repeat('a', 32));
-        $b = $this->site(str_repeat('b', 32));
+        $a = $this->makeSite(['public_id' => str_repeat('a', 32)]);
+        $b = $this->makeSite(['public_id' => str_repeat('b', 32)]);
 
         list($session, $token) = $this->claimSession($a);
 
@@ -110,7 +95,7 @@ class ApiFoundationTest extends TestCase
 
     public function test_token_is_stored_hashed()
     {
-        $site = $this->site(str_repeat('a', 32));
+        $site = $this->makeSite(['public_id' => str_repeat('a', 32)]);
 
         list($session, $token) = $this->claimSession($site);
         $row = DB::table('wordpresschat_sessions')->where('id', $session->id)->first();
@@ -122,8 +107,8 @@ class ApiFoundationTest extends TestCase
 
     public function test_claim_returns_the_same_session_for_the_same_token()
     {
-        $a = $this->site(str_repeat('a', 32));
-        $b = $this->site(str_repeat('b', 32), 'https://other.test');
+        $a = $this->makeSite(['public_id' => str_repeat('a', 32)]);
+        $b = $this->makeSite(['public_id' => str_repeat('b', 32), 'url' => 'https://other.test/', 'origin' => 'https://other.test']);
 
         list($session, $token) = $this->claimSession($a);
 
@@ -134,8 +119,8 @@ class ApiFoundationTest extends TestCase
 
     public function test_token_of_site_a_is_401_on_every_endpoint_of_site_b()
     {
-        $a = $this->site(str_repeat('a', 32));
-        $b = $this->site(str_repeat('b', 32), 'https://other.test');
+        $a = $this->makeSite(['public_id' => str_repeat('a', 32)]);
+        $b = $this->makeSite(['public_id' => str_repeat('b', 32), 'url' => 'https://other.test/', 'origin' => 'https://other.test']);
         list(, $token) = $this->claimSession($a);
 
         $tables = ['wordpresschat_sessions', 'wordpresschat_access', 'wordpresschat_messages', 'customers', 'conversations', 'threads'];

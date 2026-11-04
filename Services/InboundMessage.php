@@ -36,8 +36,7 @@ class InboundMessage
             return self::replay($existing, $body);
         }
 
-        $customer = VisitorCustomer::forSession($session);
-
+        $customer     = null;
         $message      = null;
         $conversation = null;
         $thread       = null;
@@ -49,9 +48,16 @@ class InboundMessage
         // transaction is rolled back first, then the winner is re-read.
         try {
             DB::transaction(function () use (
-                $site, $session, $customer, $text, $body, $clientMessageId,
-                &$message, &$conversation, &$thread, &$isNew
+                $site, $session, $text, $body, $clientMessageId,
+                &$customer, &$message, &$conversation, &$thread, &$isNew
             ) {
+                // First statement: serialises this session's messages, so
+                // two concurrent first sends cannot both create a customer
+                // or a conversation. The locked row is the one used below.
+                $session = Session::where('id', $session->id)->lockForUpdate()->first();
+
+                $customer = VisitorCustomer::forSession($session);
+
                 $conversation = self::continuable($session);
                 $isNew = $conversation === null;
 
@@ -229,16 +235,25 @@ class InboundMessage
      */
     private static function fireEvents(Conversation $conversation, Thread $thread, Customer $customer, bool $isNew, Message $message)
     {
+        // Two separate tries: a throwing core listener must not skip the
+        // Eventy action that modules (and enrichment) hook into.
         try {
-            if ($isNew) {
-                event(new CustomerCreatedConversation($conversation, $thread));
-                \Eventy::action('conversation.created_by_customer', $conversation, $thread, $customer);
-            } else {
-                event(new CustomerReplied($conversation, $thread));
-                \Eventy::action('conversation.customer_replied', $conversation, $thread, $customer);
-            }
+            event($isNew
+                ? new CustomerCreatedConversation($conversation, $thread)
+                : new CustomerReplied($conversation, $thread));
         } catch (\Throwable $e) {
-            \Log::error('[WordPressChat] A listener threw while dispatching events for message id '.$message->id, [
+            \Log::error('[WordPressChat] A listener threw on the core event for message id '.$message->id, [
+                'exception' => $e,
+            ]);
+        }
+
+        try {
+            \Eventy::action(
+                $isNew ? 'conversation.created_by_customer' : 'conversation.customer_replied',
+                $conversation, $thread, $customer
+            );
+        } catch (\Throwable $e) {
+            \Log::error('[WordPressChat] A listener threw on the Eventy action for message id '.$message->id, [
                 'exception' => $e,
             ]);
         }

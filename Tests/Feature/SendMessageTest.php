@@ -19,31 +19,10 @@ class SendMessageTest extends TestCase
 {
     const ORIGIN = 'https://shop.test';
 
-    private function site($publicId = null)
-    {
-        $site = new Site([
-            'name'       => 'Shop',
-            'url'        => self::ORIGIN,
-            'origin'     => self::ORIGIN,
-            'mailbox_id' => $this->testMailbox()->id,
-            'public_id'  => $publicId ?: str_repeat('a', 32),
-        ]);
-        $site->setSecret('s');
-        $site->save();
-
-        return $site;
-    }
-
-    /** A token the way the widget makes one: 32 random bytes, base64url, no padding. */
-    private static function newToken()
-    {
-        return rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
-    }
-
     /** A visitor session, created the way a first message creates it. */
     private function newSession(Site $site)
     {
-        return VisitorAuth::claim($site, self::newToken());
+        return VisitorAuth::claim($site, $this->newChatToken());
     }
 
     /**
@@ -57,7 +36,7 @@ class SendMessageTest extends TestCase
     private function send(Site $site, array $data, $token = null, $accept = true)
     {
         if ($token === null && !array_key_exists('new_token', $data)) {
-            $data['new_token'] = self::newToken();
+            $data['new_token'] = $this->newChatToken();
         }
         if (array_key_exists('new_token', $data) && $data['new_token'] === null) {
             unset($data['new_token']);
@@ -89,7 +68,7 @@ class SendMessageTest extends TestCase
 
     public function test_first_message_creates_session_customer_and_chat_conversation()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         $response = $this->send($site, ['text' => "Hi & welcome\nsecond line", 'client_message_id' => 'abcdefgh-0001']);
 
@@ -152,7 +131,7 @@ class SendMessageTest extends TestCase
 
     public function test_hostile_text_is_stored_escaped()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         $text = "<script>alert(1)</script> & 😀 שלום";
 
         $response = $this->send($site, ['text' => "  ".$text."  ", 'client_message_id' => 'hostile-0001']);
@@ -166,7 +145,7 @@ class SendMessageTest extends TestCase
 
     public function test_apostrophes_and_quotes_survive_the_round_trip()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         // html2text alone would turn "I'm" into "Im". Entities the visitor
         // typed literally must come back literally.
         $text = "I'm \"fine\", it's <ok> &#039; &amp; &apos;";
@@ -179,7 +158,7 @@ class SendMessageTest extends TestCase
 
     public function test_text_over_5000_chars_is_422()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         $sessions = Session::count();
 
         $this->send($site, ['text' => str_repeat('ä', 5001), 'client_message_id' => 'long-0001'])
@@ -191,7 +170,7 @@ class SendMessageTest extends TestCase
 
     public function test_text_of_5000_multibyte_chars_is_accepted()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         $this->send($site, ['text' => str_repeat('ä', 5000), 'client_message_id' => 'long-0002'])
             ->assertStatus(201);
@@ -199,7 +178,7 @@ class SendMessageTest extends TestCase
 
     public function test_blank_text_is_422()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         $this->send($site, ['text' => " \n\t ", 'client_message_id' => 'blank-0001'])
             ->assertStatus(422)
@@ -216,7 +195,7 @@ class SendMessageTest extends TestCase
 
     public function test_bad_client_message_id_is_422()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         foreach ([null, 'short', 'has spaces in it', 'under_score_id', str_repeat('a', 65), 12345678] as $id) {
             $data = ['text' => 'Hello'];
@@ -234,7 +213,7 @@ class SendMessageTest extends TestCase
 
     public function test_validation_error_is_json_without_accept_header()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         $response = $this->send($site, ['text' => '', 'client_message_id' => 'noaccept-0001'], null, false);
 
@@ -245,7 +224,7 @@ class SendMessageTest extends TestCase
 
     public function test_second_message_with_token_continues_conversation()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         $first = $this->send($site, ['text' => 'First', 'client_message_id' => 'continue-0001']);
         $token = $first->json()['token'];
@@ -266,7 +245,7 @@ class SendMessageTest extends TestCase
 
     public function test_retry_with_same_client_message_id_returns_original()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         $first = $this->send($site, ['text' => 'Hello there', 'client_message_id' => 'retry-0001']);
         $token = $first->json()['token'];
@@ -284,7 +263,7 @@ class SendMessageTest extends TestCase
 
     public function test_same_client_message_id_different_text_is_409()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         $first = $this->send($site, ['text' => 'Hello there', 'client_message_id' => 'conflict-0001']);
         $token = $first->json()['token'];
@@ -299,7 +278,7 @@ class SendMessageTest extends TestCase
 
     public function test_closed_conversation_starts_a_new_one()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         $first = $this->send($site, ['text' => 'Old question', 'client_message_id' => 'closed-0001']);
         $token = $first->json()['token'];
@@ -326,7 +305,7 @@ class SendMessageTest extends TestCase
 
     public function test_deleted_conversation_starts_a_new_one()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         $first = $this->send($site, ['text' => 'Old question', 'client_message_id' => 'deleted-0001']);
         $token = $first->json()['token'];
@@ -342,7 +321,7 @@ class SendMessageTest extends TestCase
 
     public function test_pending_conversation_is_reactivated_and_continued()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         $first = $this->send($site, ['text' => 'Question', 'client_message_id' => 'pending-0001']);
         $token = $first->json()['token'];
@@ -362,7 +341,7 @@ class SendMessageTest extends TestCase
 
     public function test_customer_events_fire_once()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         $created = 0;
         $replied = 0;
         \Eventy::addAction('conversation.created_by_customer', function () use (&$created) {
@@ -388,7 +367,7 @@ class SendMessageTest extends TestCase
 
     public function test_invalid_token_is_401()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         $messages = Message::count();
 
         $this->send($site, ['text' => 'Hello', 'client_message_id' => 'token-0001'], 'not-a-real-token')
@@ -413,8 +392,8 @@ class SendMessageTest extends TestCase
 
     public function test_lost_first_response_retry_lands_in_the_same_session()
     {
-        $site = $this->site();
-        $newToken = self::newToken();
+        $site = $this->makeSite();
+        $newToken = $this->newChatToken();
         $data = ['text' => 'Hello', 'client_message_id' => 'lost-0001', 'new_token' => $newToken];
 
         $first = $this->send($site, $data);
@@ -437,8 +416,8 @@ class SendMessageTest extends TestCase
 
     public function test_messages_queued_behind_a_lost_first_one_share_its_session()
     {
-        $site = $this->site();
-        $newToken = self::newToken();
+        $site = $this->makeSite();
+        $newToken = $this->newChatToken();
 
         $a = $this->send($site, ['text' => 'One', 'client_message_id' => 'queued-0001', 'new_token' => $newToken]);
         $b = $this->send($site, ['text' => 'Two', 'client_message_id' => 'queued-0002', 'new_token' => $newToken]);
@@ -457,7 +436,7 @@ class SendMessageTest extends TestCase
 
     public function test_malformed_new_token_is_422_and_writes_nothing()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         $before = $this->rowCounts();
 
         $bad = [
@@ -478,7 +457,7 @@ class SendMessageTest extends TestCase
 
     public function test_new_token_is_ignored_when_a_session_token_is_sent()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         $first = $this->send($site, ['text' => 'One', 'client_message_id' => 'ignored-0001']);
         $token = $first->json()['token'];
         $sessions = Session::count();
@@ -492,9 +471,9 @@ class SendMessageTest extends TestCase
 
     public function test_new_token_of_another_site_is_409_and_writes_nothing()
     {
-        $a = $this->site(str_repeat('a', 32));
-        $b = $this->site(str_repeat('b', 32));
-        $newToken = self::newToken();
+        $a = $this->makeSite(['public_id' => str_repeat('a', 32)]);
+        $b = $this->makeSite(['public_id' => str_repeat('b', 32)]);
+        $newToken = $this->newChatToken();
 
         $this->send($a, ['text' => 'Hello', 'client_message_id' => 'other-0001', 'new_token' => $newToken])->assertStatus(201);
         $before = $this->rowCounts();
@@ -509,7 +488,7 @@ class SendMessageTest extends TestCase
 
     public function test_control_characters_are_stripped_from_the_text()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         $response = $this->send($site, ['text' => "Hel\u{0000}lo\u{0007}\u{007F}\tthere\r\nfriend", 'client_message_id' => 'control-0001']);
 
@@ -521,7 +500,7 @@ class SendMessageTest extends TestCase
 
     public function test_text_of_only_control_characters_is_422_and_writes_nothing()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         $before = $this->rowCounts();
 
         $this->send($site, ['text' => "\u{0000}\u{0001}\u{001F}\u{007F}", 'client_message_id' => 'control-0002'])
@@ -534,23 +513,24 @@ class SendMessageTest extends TestCase
     /**
      * Simulates two concurrent requests with the same client_message_id: the
      * competing request commits between our duplicate pre-check and our
-     * insert. The `customer.created` hook is the one point that runs in that
-     * window (the session's first message creates its customer there), so
-     * the competitor is run from inside it. Our insert then hits the unique
-     * index and the original must be returned instead of a 500.
+     * transaction. The pre-check's own query (the first SELECT on the
+     * messages table) is the one point that runs in that window, so the
+     * competitor is run from a query listener on it. Our insert then hits
+     * the unique index and the original must be returned instead of a 500.
      */
     private function raceAgainst(Site $site, Session $session, $competitorText)
     {
         $competitor = null;
-        \Eventy::addAction('customer.created', function ($customer) use ($site, $session, $competitorText, &$competitor) {
-            if ($competitor !== null) {
+        \DB::listen(function ($query) use ($site, $session, $competitorText, &$competitor) {
+            if ($competitor !== null
+                || stripos($query->sql, 'select') !== 0
+                || strpos($query->sql, 'wordpresschat_messages') === false
+            ) {
                 return;
             }
             $competitor = false;
-            // The competing request found the customer already linked.
-            $session->customer_id = $customer->id;
             $competitor = InboundMessage::receive($site, $session, $competitorText, 'race-0001');
-        }, 20, 1);
+        });
 
         return function () use (&$competitor) {
             return $competitor;
@@ -559,7 +539,7 @@ class SendMessageTest extends TestCase
 
     public function test_concurrent_duplicate_returns_the_winner()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         $session = $this->newSession($site);
         $winner = $this->raceAgainst($site, $session, 'Hello');
 
@@ -572,9 +552,77 @@ class SendMessageTest extends TestCase
         $this->assertSame(1, Thread::where('conversation_id', $message->conversation_id)->count());
     }
 
+    public function test_race_fires_events_once()
+    {
+        $site = $this->makeSite();
+        $session = $this->newSession($site);
+        $fired = 0;
+        \Eventy::addAction('conversation.created_by_customer', function () use (&$fired) {
+            $fired++;
+        }, 20, 3);
+        $this->raceAgainst($site, $session, 'Hello');
+
+        InboundMessage::receive($site, $session, 'Hello', 'race-0001');
+
+        $this->assertSame(1, $fired);
+    }
+
+    public function test_a_throwing_event_listener_does_not_skip_the_eventy_action()
+    {
+        $site = $this->makeSite();
+        \Event::listen(\App\Events\CustomerCreatedConversation::class, function () {
+            throw new \RuntimeException('boom');
+        });
+        $fired = 0;
+        \Eventy::addAction('conversation.created_by_customer', function () use (&$fired) {
+            $fired++;
+        }, 20, 3);
+
+        $this->send($site, ['text' => 'Hello', 'client_message_id' => 'boom-0001'])->assertStatus(201);
+
+        $this->assertSame(1, $fired);
+    }
+
+    public function test_session_whose_customer_was_deleted_gets_a_fresh_customer()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site);
+        $oldCustomerId = (int) $chat['conversation']->customer_id;
+        $chat['conversation']->status = Conversation::STATUS_CLOSED;
+        $chat['conversation']->save();
+        DB::table('customers')->where('id', $oldCustomerId)->delete();
+
+        $response = $this->api('POST', $site, '/messages', $chat['token'], [
+            'text' => 'Again', 'client_message_id' => 'again-0001',
+        ]);
+
+        $response->assertStatus(201);
+        $conversation = $this->conversationOf($this->messageFrom($response));
+        $this->assertNotSame($oldCustomerId, (int) $conversation->customer_id);
+        $this->assertSame((int) $conversation->customer_id, (int) Session::find($chat['session']->id)->customer_id);
+    }
+
+    public function test_invalid_utf8_text_is_422()
+    {
+        $site = $this->makeSite();
+        $sessions = Session::count();
+        $threads = Thread::count();
+
+        $this->call('POST', '/wordpress-chat/api/v1/sites/'.$site->public_id.'/messages', [
+            'text'              => "\xC3\x28",
+            'client_message_id' => 'utf8-0001',
+            'new_token'         => $this->newChatToken(),
+        ], [], [], ['HTTP_ORIGIN' => self::ORIGIN, 'HTTP_ACCEPT' => 'application/json'])
+            ->assertStatus(422)
+            ->assertExactJson(['error' => 'validation', 'field' => 'text']);
+
+        $this->assertSame($sessions, Session::count());
+        $this->assertSame($threads, Thread::count());
+    }
+
     public function test_concurrent_duplicate_with_different_text_conflicts()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         $session = $this->newSession($site);
         $this->raceAgainst($site, $session, 'Hello');
 

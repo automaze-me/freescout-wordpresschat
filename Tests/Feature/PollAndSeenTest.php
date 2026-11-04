@@ -14,31 +14,6 @@ class PollAndSeenTest extends TestCase
 
     private $n = 0;
 
-    private function site()
-    {
-        $site = new Site([
-            'name'       => 'Shop',
-            'url'        => self::ORIGIN,
-            'origin'     => self::ORIGIN,
-            'mailbox_id' => $this->testMailbox()->id,
-            'public_id'  => str_repeat('a', 32),
-        ]);
-        $site->setSecret('s');
-        $site->save();
-
-        return $site;
-    }
-
-    private function call_api($method, Site $site, $path, $token = null, $data = null)
-    {
-        $server = ['CONTENT_TYPE' => 'application/json', 'HTTP_ORIGIN' => self::ORIGIN];
-        if ($token !== null) {
-            $server['HTTP_X_CHAT_TOKEN'] = $token;
-        }
-
-        return $this->call($method, '/wordpress-chat/api/v1/sites/'.$site->public_id.$path, [], [], [], $server, $data === null ? null : json_encode($data));
-    }
-
     /** Sends a visitor message via the real endpoint; returns [token, message id, conversation id]. */
     private function visitorSays(Site $site, $text, $token = null)
     {
@@ -47,7 +22,7 @@ class PollAndSeenTest extends TestCase
             // The widget's own token for its first message.
             $data['new_token'] = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
         }
-        $r = $this->call_api('POST', $site, '/messages', $token, $data);
+        $r = $this->api('POST', $site, '/messages', $token, $data);
         $json = $r->json();
         $id = $json['message']['id'];
 
@@ -85,12 +60,12 @@ class PollAndSeenTest extends TestCase
 
     private function poll(Site $site, $token, $after = null)
     {
-        return $this->call_api('GET', $site, '/messages'.($after === null ? '' : '?after='.$after), $token);
+        return $this->api('GET', $site, '/messages'.($after === null ? '' : '?after='.$after), $token);
     }
 
     public function test_poll_returns_visitor_messages_and_published_replies_in_order()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         list($token, $m1, $conv) = $this->visitorSays($site, 'first');
         list($t, $reply) = $this->agentThread($conv);
         list(, $m3) = $this->visitorSays($site, 'third', $token);
@@ -108,7 +83,7 @@ class PollAndSeenTest extends TestCase
 
     public function test_unpublished_reply_and_notes_are_not_returned()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         list($token, $m1, $conv) = $this->visitorSays($site, 'first');
         $this->agentThread($conv, null, false);
         list(, $noteRow) = $this->agentThread($conv, Thread::TYPE_NOTE);
@@ -118,14 +93,14 @@ class PollAndSeenTest extends TestCase
 
         $this->assertSame([$m1], $ids);
         $this->assertNotContains($noteRow->id, $ids);
-        $this->call_api('POST', $site, '/seen', $token, ['message_ids' => [$noteRow->id]])->assertStatus(204);
+        $this->api('POST', $site, '/seen', $token, ['message_ids' => [$noteRow->id]])->assertStatus(204);
         $this->assertNull(Message::find($noteRow->id)->seen_at);
         $this->assertNotContains($pending->id, $ids);
     }
 
     public function test_after_cursor_limits_results()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         list($token, $m1, $conv) = $this->visitorSays($site, 'first');
         list(, $reply) = $this->agentThread($conv);
 
@@ -154,7 +129,7 @@ class PollAndSeenTest extends TestCase
 
     public function test_poll_flag_follows_the_conversation_status()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         list($token, , $conv) = $this->visitorSays($site, 'first');
 
         $this->assertSame(['status' => 'open', 'poll' => true], $this->conversationAfter($site, $token, $conv, Conversation::STATUS_ACTIVE));
@@ -164,7 +139,7 @@ class PollAndSeenTest extends TestCase
 
     public function test_closed_conversation_polls_only_during_the_grace_period()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         list($token, , $conv) = $this->visitorSays($site, 'first');
 
         $this->assertSame(
@@ -183,7 +158,7 @@ class PollAndSeenTest extends TestCase
 
     public function test_deleted_conversation_does_not_poll()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         list($token, , $conv) = $this->visitorSays($site, 'first');
         $conversation = Conversation::find($conv);
         $conversation->state = Conversation::STATE_DELETED;
@@ -194,7 +169,7 @@ class PollAndSeenTest extends TestCase
 
     public function test_ids_above_the_integer_range_are_422()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         list($token, $m1) = $this->visitorSays($site, 'first');
 
         $this->poll($site, $token, 2147483647)->assertStatus(200);
@@ -203,15 +178,15 @@ class PollAndSeenTest extends TestCase
             ->assertExactJson(['error' => 'validation', 'field' => 'after']);
         $this->poll($site, $token, '99999999999999')->assertStatus(422);
 
-        $this->call_api('POST', $site, '/seen', $token, ['message_ids' => [2147483647]])->assertStatus(204);
-        $this->call_api('POST', $site, '/seen', $token, ['message_ids' => [$m1, 2147483648]])
+        $this->api('POST', $site, '/seen', $token, ['message_ids' => [2147483647]])->assertStatus(204);
+        $this->api('POST', $site, '/seen', $token, ['message_ids' => [$m1, 2147483648]])
             ->assertStatus(422)
             ->assertExactJson(['error' => 'validation', 'field' => 'message_ids']);
     }
 
     public function test_poll_without_conversation_returns_null_conversation()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         list($token) = $this->visitorSays($site, 'x');
         \Modules\WordPressChat\Entities\Access::query()->delete();
 
@@ -222,7 +197,7 @@ class PollAndSeenTest extends TestCase
 
     public function test_other_sessions_conversation_is_invisible()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         list($tokenA, $a1, $conv) = $this->visitorSays($site, 'secret A');
         list(, $reply) = $this->agentThread($conv);
         list($tokenB) = $this->visitorSays($site, 'hello B');
@@ -230,18 +205,18 @@ class PollAndSeenTest extends TestCase
         $textsB = array_column($this->poll($site, $tokenB)->json()['messages'], 'text');
         $this->assertSame(['hello B'], $textsB);
 
-        $this->call_api('POST', $site, '/seen', $tokenB, ['message_ids' => [$reply->id, $a1]])->assertStatus(204);
+        $this->api('POST', $site, '/seen', $tokenB, ['message_ids' => [$reply->id, $a1]])->assertStatus(204);
         $this->assertNull(Message::find($reply->id)->seen_at);
     }
 
     public function test_seen_marks_only_visible_agent_messages_once()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         list($token, $m1, $conv) = $this->visitorSays($site, 'first');
         list(, $reply) = $this->agentThread($conv);
         list(, $hidden) = $this->agentThread($conv, null, true, false);
 
-        $this->call_api('POST', $site, '/seen', $token, ['message_ids' => [$m1, $reply->id, $hidden->id, 999999]])->assertStatus(204);
+        $this->api('POST', $site, '/seen', $token, ['message_ids' => [$m1, $reply->id, $hidden->id, 999999]])->assertStatus(204);
 
         $this->assertNull(Message::find($m1)->seen_at);
         $this->assertNull(Message::find($hidden->id)->seen_at);
@@ -249,24 +224,24 @@ class PollAndSeenTest extends TestCase
         $this->assertNotNull($first);
 
         Message::where('id', $reply->id)->update(['seen_at' => '2000-01-01 00:00:00']);
-        $this->call_api('POST', $site, '/seen', $token, ['message_ids' => [$reply->id]])->assertStatus(204);
+        $this->api('POST', $site, '/seen', $token, ['message_ids' => [$reply->id]])->assertStatus(204);
         $this->assertSame('2000-01-01 00:00:00', Message::find($reply->id)->seen_at->format('Y-m-d H:i:s'));
     }
 
     public function test_seen_validates_input()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
         list($token) = $this->visitorSays($site, 'first');
 
-        $this->call_api('POST', $site, '/seen', $token, ['message_ids' => 'x'])->assertStatus(422);
-        $this->call_api('POST', $site, '/seen', $token, ['message_ids' => ['a']])->assertStatus(422);
-        $this->call_api('POST', $site, '/seen', $token, ['message_ids' => range(1, 101)])->assertStatus(422);
-        $this->call_api('POST', $site, '/seen', null, ['message_ids' => []])->assertStatus(401);
+        $this->api('POST', $site, '/seen', $token, ['message_ids' => 'x'])->assertStatus(422);
+        $this->api('POST', $site, '/seen', $token, ['message_ids' => ['a']])->assertStatus(422);
+        $this->api('POST', $site, '/seen', $token, ['message_ids' => range(1, 101)])->assertStatus(422);
+        $this->api('POST', $site, '/seen', null, ['message_ids' => []])->assertStatus(401);
     }
 
     public function test_poll_without_token_is_401()
     {
-        $site = $this->site();
+        $site = $this->makeSite();
 
         $this->poll($site, null)->assertStatus(401);
         $this->assertSame(['error' => 'unauthorized'], $this->poll($site, null)->json());
