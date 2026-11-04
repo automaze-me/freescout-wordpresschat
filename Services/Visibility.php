@@ -25,15 +25,23 @@ class Visibility
                     ->from((new Access())->getTable())
                     ->where('session_id', $session->id);
             })
-            ->whereHas('thread', function ($q) {
-                $q->where('state', \App\Thread::STATE_PUBLISHED);
-            })
             ->where(function ($q) {
-                $q->where('wordpresschat_messages.direction', Message::DIRECTION_IN)
-                    ->orWhere(function ($q) {
-                        $q->where('wordpresschat_messages.direction', Message::DIRECTION_OUT)
-                            ->whereNotNull('wordpresschat_messages.published_at');
-                    });
+                // Each direction is paired with the only thread type it may
+                // carry, so a stray row on a note can never leak.
+                $q->where(function ($q) {
+                    $q->where('wordpresschat_messages.direction', Message::DIRECTION_IN)
+                        ->whereHas('thread', function ($t) {
+                            $t->where('state', \App\Thread::STATE_PUBLISHED)
+                                ->where('type', \App\Thread::TYPE_CUSTOMER);
+                        });
+                })->orWhere(function ($q) {
+                    $q->where('wordpresschat_messages.direction', Message::DIRECTION_OUT)
+                        ->whereNotNull('wordpresschat_messages.published_at')
+                        ->whereHas('thread', function ($t) {
+                            $t->where('state', \App\Thread::STATE_PUBLISHED)
+                                ->where('type', \App\Thread::TYPE_MESSAGE);
+                        });
+                });
             })
             ->orderBy('wordpresschat_messages.id');
     }

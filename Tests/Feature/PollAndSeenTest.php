@@ -108,13 +108,15 @@ class PollAndSeenTest extends TestCase
         $site = $this->site();
         list($token, $m1, $conv) = $this->visitorSays($site, 'first');
         $this->agentThread($conv, null, false);
-        list($note) = $this->agentThread($conv, Thread::TYPE_NOTE, false);
+        list(, $noteRow) = $this->agentThread($conv, Thread::TYPE_NOTE);
         list(, $pending) = $this->agentThread($conv, null, true, false);
 
         $ids = array_column($this->poll($site, $token)->json()['messages'], 'id');
 
         $this->assertSame([$m1], $ids);
-        $this->assertNotContains($note->id, $ids);
+        $this->assertNotContains($noteRow->id, $ids);
+        $this->call_api('POST', $site, '/seen', $token, ['message_ids' => [$noteRow->id]])->assertStatus(204);
+        $this->assertNull(Message::find($noteRow->id)->seen_at);
         $this->assertNotContains($pending->id, $ids);
     }
 
