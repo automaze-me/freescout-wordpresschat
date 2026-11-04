@@ -4,6 +4,7 @@ namespace Modules\WordPressChat\Providers;
 
 use Illuminate\Support\ServiceProvider;
 use Modules\WordPressChat\Console\SendDueEmails;
+use Modules\WordPressChat\Http\Middleware\OversizedUpload;
 use Modules\WordPressChat\Listeners\PublishReplyToChat;
 use Modules\WordPressChat\Listeners\RouteReplyChannel;
 use Modules\WordPressChat\Listeners\RecordBounce;
@@ -22,6 +23,15 @@ class WordPressChatServiceProvider extends ServiceProvider
         $this->loadViewsFrom(__DIR__.'/../Resources/views', 'wordpresschat');
         $this->loadTranslationsFrom(__DIR__.'/../Resources/lang', 'wordpresschat');
         $this->loadMigrationsFrom(__DIR__.'/../Database/Migrations');
+
+        // Ahead of Laravel's global ValidatePostSize, whose 413 for an
+        // oversized upload carries no CORS headers (see OversizedUpload).
+        // Providers boot before the kernel reads its global stack, so this
+        // already holds for the request being booted.
+        $kernel = $this->app[\Illuminate\Contracts\Http\Kernel::class];
+        if (method_exists($kernel, 'prependMiddleware')) {
+            $kernel->prependMiddleware(OversizedUpload::class);
+        }
 
         // FreeScout's module install/update flow never restarts queue
         // workers, so a long-running worker keeps executing the module code

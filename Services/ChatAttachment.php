@@ -39,13 +39,20 @@ class ChatAttachment
 
     const MB = 1048576;
 
+    /**
+     * Room left under post_max_size for the rest of the multipart body (the
+     * boundaries and part headers, the text, the tokens): a file of the
+     * announced limit must still fit in one request.
+     */
+    const POST_HEADROOM = 65536;
+
     /** The stored name's maximum, in bytes (so also in characters). */
     const MAX_NAME_BYTES = 255;
 
     /**
      * The largest file in MB a visitor may send to $site: the site's
-     * max_attachment_mb, capped by PHP's upload_max_filesize and
-     * post_max_size, rounded down, at least 1.
+     * max_attachment_mb, capped by PHP's upload_max_filesize and by
+     * post_max_size less POST_HEADROOM, rounded down, at least 1.
      */
     public static function effectiveLimitMb(Site $site): int
     {
@@ -64,11 +71,15 @@ class ChatAttachment
     {
         $bytes = ($siteMb > 0 ? $siteMb : self::DEFAULT_LIMIT_MB) * self::MB;
 
-        foreach ([$uploadMaxFilesize, $postMaxSize] as $ini) {
-            $cap = self::iniBytes($ini);
-            if ($cap > 0) {
-                $bytes = min($bytes, $cap);
-            }
+        $fileCap = self::iniBytes($uploadMaxFilesize);
+        if ($fileCap > 0) {
+            $bytes = min($bytes, $fileCap);
+        }
+
+        // The whole request must fit, not only the file.
+        $postCap = self::iniBytes($postMaxSize);
+        if ($postCap > 0) {
+            $bytes = min($bytes, $postCap - self::POST_HEADROOM);
         }
 
         return max(1, intdiv($bytes, self::MB));

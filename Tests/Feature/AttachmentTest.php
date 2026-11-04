@@ -577,9 +577,10 @@ class AttachmentTest extends TestCase
     public function test_status_reports_the_effective_limit()
     {
         $site = $this->makeSite(['max_attachment_mb' => 7]);
+        $post = ChatAttachment::iniBytes((string) ini_get('post_max_size'));
         $php = min(
             ChatAttachment::iniBytes((string) ini_get('upload_max_filesize')) ?: PHP_INT_MAX,
-            ChatAttachment::iniBytes((string) ini_get('post_max_size')) ?: PHP_INT_MAX
+            $post > 0 ? $post - ChatAttachment::POST_HEADROOM : PHP_INT_MAX
         );
         $expected = ['attachment_mb' => max(1, min(7, intdiv($php, 1048576)))];
 
@@ -595,9 +596,10 @@ class AttachmentTest extends TestCase
 
         // The PHP caps, which the container's ini can't show.
         $this->assertSame(10, ChatAttachment::limitFor(10, '64M', '0'));
-        $this->assertSame(8, ChatAttachment::limitFor(10, '8M', '8M'));
+        // post_max_size less POST_HEADROOM (OversizedUploadTest has more).
+        $this->assertSame(7, ChatAttachment::limitFor(10, '8M', '8M'));
         $this->assertSame(2, ChatAttachment::limitFor(10, '2M', '8M'));
-        $this->assertSame(3, ChatAttachment::limitFor(5, '64M', '3M'));
+        $this->assertSame(2, ChatAttachment::limitFor(5, '64M', '3M'));
         $this->assertSame(1, ChatAttachment::limitFor(10, '1500K', '8M'));
         $this->assertSame(1, ChatAttachment::limitFor(10, '512K', '8M'));
         $this->assertSame(2, ChatAttachment::limitFor(10, '2097152', '1G'));
