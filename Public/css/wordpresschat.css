@@ -1,0 +1,12 @@
+.wpc-reply-picker {
+    margin: 8px 20px 0;
+}
+.wpc-reply-picker .radio-inline {
+    margin-left: 10px;
+}
+.wpc-reply-picker .wpc-picker-hint {
+    margin-left: 12px;
+}
+.wpc-reply-picker label:has(input:disabled) {
+    opacity: .6;
+}

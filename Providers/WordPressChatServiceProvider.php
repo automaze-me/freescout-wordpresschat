@@ -8,6 +8,8 @@ use Modules\WordPressChat\Listeners\PublishReplyToChat;
 use Modules\WordPressChat\Listeners\RouteReplyChannel;
 use Modules\WordPressChat\Listeners\RecordCustomerEmail;
 use Modules\WordPressChat\Services\ConversationHeader;
+use Modules\WordPressChat\Services\DeliveryMarker;
+use Modules\WordPressChat\Services\ReplyChannel;
 use Modules\WordPressChat\Services\FailureLineItem;
 use Modules\WordPressChat\Services\IdentityLineItem;
 use Modules\WordPressChat\WordPressChat;
@@ -115,6 +117,39 @@ class WordPressChatServiceProvider extends ServiceProvider
 
             return $name;
         }, 20, 2);
+
+        // The "Send via" picker under the reply editor (spec 8.3). Core fires
+        // this hook outside the reply form; Public/js/wordpresschat.js copies
+        // the choice into the form on submit.
+        \Eventy::addAction('reply_form.after', function ($conversation) {
+            if ((int) $conversation->channel !== WordPressChat::CHANNEL) {
+                return;
+            }
+
+            echo view('wordpresschat::conversation.reply_picker', [
+                'default'       => ReplyChannel::defaultChoice($conversation),
+                'emailDisabled' => !ReplyChannel::emailAvailable($conversation),
+                'chatDisabled'  => ReplyChannel::locked($conversation),
+            ])->render();
+        }, 20, 1);
+
+        // One delivery line under every agent reply (spec 8.2, Ruling D11).
+        \Eventy::addAction('thread.meta', [DeliveryMarker::class, 'render'], 20, 5);
+
+        // NO ?v= query on these paths: core feeds the list to Minify, which
+        // stats every entry on disk. A query string makes the "file"
+        // unfindable and takes the whole app JS/CSS bundle down.
+        \Eventy::addFilter('javascripts', function ($javascripts) {
+            $javascripts[] = \Module::getPublicPath(WordPressChat::ALIAS).'/js/wordpresschat.js';
+
+            return $javascripts;
+        }, 20, 1);
+
+        \Eventy::addFilter('stylesheets', function ($stylesheets) {
+            $stylesheets[] = \Module::getPublicPath(WordPressChat::ALIAS).'/css/wordpresschat.css';
+
+            return $stylesheets;
+        }, 20, 1);
 
         // After core's undo window, mark the newest agent reply as published
         // so the widget's poll may show it.
