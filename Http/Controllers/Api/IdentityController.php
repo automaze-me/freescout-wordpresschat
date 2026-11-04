@@ -7,6 +7,7 @@ use Illuminate\Routing\Controller;
 use Modules\WordPressChat\Entities\Session;
 use Modules\WordPressChat\Entities\Site;
 use Modules\WordPressChat\Exceptions\AlreadyIdentifiedException;
+use Modules\WordPressChat\Services\ContinueLink;
 use Modules\WordPressChat\Services\IdentityPayload;
 use Modules\WordPressChat\Services\Visibility;
 use Modules\WordPressChat\Services\VisitorAuth;
@@ -82,6 +83,69 @@ class IdentityController extends Controller
         VisitorIdentity::logout($session);
 
         return response('', 204);
+    }
+
+    /**
+     * POST …/continue {link}: the visitor clicked "Continue chat" for the
+     * continue-link token `link` (spec §6.2). With X-Chat-Token that
+     * browser is verified; without it the body carries `new_token`, as on a
+     * first send, and the session is created for it and echoed back. There
+     * is no GET route: a link scanner prefetching URLs can never redeem.
+     *
+     * 200 {token?, identity, conversation}; 410 link_invalid for every
+     * unknown, used, expired or other-site link, checked before a session
+     * is created; 401 unknown chat token; 422 validation (`link`,
+     * `new_token`); 409 conflict when `new_token` is taken on another site.
+     */
+    public function continueChat(Request $request)
+    {
+        $site  = $request->attributes->get('wordpresschat.site');
+        $token = $request->header('X-Chat-Token');
+
+        $session = null;
+        if ($token !== null && $token !== '') {
+            $session = VisitorAuth::resolve($site, $token);
+
+            if (!$session) {
+                return $this->unauthorized();
+            }
+        }
+
+        $link = $request->input('link');
+
+        if (!is_string($link) || !preg_match('/\A[A-Za-z0-9_-]{43}\z/', $link)) {
+            return $this->invalid('link');
+        }
+
+        $newToken = null;
+        if (!$session) {
+            $newToken = $request->input('new_token');
+
+            if (!is_string($newToken) || !preg_match('/\A[A-Za-z0-9_-]{43}\z/', $newToken)) {
+                return $this->invalid('new_token');
+            }
+        }
+
+        if (!ContinueLink::find($site, $link)) {
+            return $this->linkInvalid();
+        }
+
+        // Outside any transaction (Ruling R4); redeem() opens its own.
+        if (!$session) {
+            $session = VisitorAuth::claim($site, $newToken);
+
+            if (!$session) {
+                return response()->json(['error' => 'conflict'], 409);
+            }
+        }
+
+        if (!ContinueLink::redeem($site, $session, $link)) {
+            return $this->linkInvalid();
+        }
+
+        $payload = $newToken !== null ? ['token' => $newToken] : [];
+
+        return response()->json($payload + Visibility::status($session->fresh() ?: $session));
     }
 
     private function typedEmail(Request $request, Session $session)
@@ -187,5 +251,11 @@ class IdentityController extends Controller
     private function alreadyIdentified()
     {
         return response()->json(['error' => 'already_identified'], 409);
+    }
+
+    /** One answer for unknown, used, expired and other-site links. */
+    private function linkInvalid()
+    {
+        return response()->json(['error' => 'link_invalid'], 410);
     }
 }

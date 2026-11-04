@@ -67,10 +67,13 @@ class InboundMessage
                     VisitorIdentity::forgetAccount($session);
                 }
 
-                $customer = VisitorCustomer::forSession($session);
-
                 $conversation = self::continuable($session);
                 $isNew = $conversation === null;
+
+                $customer = $isNew ? null : self::verifiedCustomer($session, $conversation);
+                if (!$customer) {
+                    $customer = VisitorCustomer::forSession($session);
+                }
 
                 if ($isNew) {
                     $conversation = self::createConversation($site, $customer, $text);
@@ -205,6 +208,28 @@ class InboundMessage
         }
 
         return $conversation;
+    }
+
+    /**
+     * The customer a browser with verified access (a redeemed continue
+     * link) writes as in $conversation: the conversation's own, whatever
+     * the session's customer_id says. A lapsed login or a logout clears
+     * that (VisitorIdentity::forgetAccount()), and the verified browser's
+     * messages must not move to a fresh placeholder. Null for any other
+     * browser, or when the conversation's customer is gone.
+     */
+    private static function verifiedCustomer(Session $session, Conversation $conversation): ?Customer
+    {
+        if (!$conversation->customer_id) {
+            return null;
+        }
+
+        $verified = Access::where('session_id', $session->id)
+            ->where('conversation_id', $conversation->id)
+            ->whereNotNull('verified_at')
+            ->exists();
+
+        return $verified ? Customer::find($conversation->customer_id) : null;
     }
 
     private static function createConversation(Site $site, Customer $customer, string $text): Conversation
