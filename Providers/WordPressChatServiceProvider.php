@@ -5,6 +5,7 @@ namespace Modules\WordPressChat\Providers;
 use Illuminate\Support\ServiceProvider;
 use Modules\WordPressChat\Listeners\PublishReplyToChat;
 use Modules\WordPressChat\Listeners\RecordCustomerEmail;
+use Modules\WordPressChat\Services\ConversationHeader;
 use Modules\WordPressChat\Services\IdentityLineItem;
 use Modules\WordPressChat\WordPressChat;
 
@@ -89,6 +90,27 @@ class WordPressChatServiceProvider extends ServiceProvider
 
         // A customer's email in a chat conversation cuts off unverified browsers.
         \Eventy::addAction('conversation.customer_replied', [new RecordCustomerEmail(), 'handle'], 20, 3);
+
+        // Pill, identity badge and order-only warning. In chat mode core hides
+        // after_subject_block in a collapsed accordion, so chat mode renders
+        // through after_subject; each hook checks the mode itself, so exactly
+        // one of them echoes.
+        \Eventy::addAction('conversation.after_subject', function ($conversation, $mailbox) {
+            if ($conversation->isInChatMode()) {
+                echo ConversationHeader::render($conversation);
+            }
+        }, 20, 2);
+
+        \Eventy::addAction('conversation.after_subject_block', function ($conversation, $mailbox) {
+            if (!$conversation->isInChatMode()) {
+                echo ConversationHeader::render($conversation);
+            }
+        }, 20, 2);
+
+        // "via email" chip next to the sender's name.
+        \Eventy::addAction('thread.after_person_action', function ($thread) {
+            echo ConversationHeader::threadChip($thread);
+        }, 20, 1);
 
         // Core renders a line item only through getActionText(), which has no
         // branch for our NULL action_type and falls through to this filter.
