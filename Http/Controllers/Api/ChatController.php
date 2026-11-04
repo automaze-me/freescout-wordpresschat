@@ -6,10 +6,12 @@ use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Exceptions\MessageConflictException;
+use Modules\WordPressChat\Services\IdentityPayload;
 use Modules\WordPressChat\Services\InboundMessage;
 use Modules\WordPressChat\Services\MessagePresenter;
 use Modules\WordPressChat\Services\Visibility;
 use Modules\WordPressChat\Services\VisitorAuth;
+use Modules\WordPressChat\Services\VisitorIdentity;
 
 class ChatController extends Controller
 {
@@ -29,7 +31,7 @@ class ChatController extends Controller
      * generated for its first message: the session is created for it (or
      * found again, when this is a retry of a first message whose response
      * was lost) and the token is echoed back. With the header, new_token is
-     * ignored.
+     * ignored. An optional `login_token` logs the session in first.
      *
      * Validation is done by hand: this route group is not in the `web`
      * group and the widget may not send Accept: application/json, so a
@@ -89,10 +91,27 @@ class ChatController extends Controller
             }
         }
 
+        // Ruling P7: an optional login token, bound to the chat token this
+        // request uses, makes the message an account message from the
+        // start; core's events then see the account customer. Opened
+        // outside any transaction (Ruling R4). A rejected one is ignored:
+        // the message is stored anyway.
+        $login = null;
+        if ($request->input('login_token') !== null) {
+            $login = IdentityPayload::login($site, $request->input('login_token'), (string) $session->token_hash);
+        }
+        if ($login !== null) {
+            VisitorIdentity::login($session, $login);
+        }
+
         try {
             $message = InboundMessage::receive($site, $session, $text, $clientMessageId);
         } catch (MessageConflictException $e) {
             return response()->json(['error' => 'conflict'], 409);
+        }
+
+        if ($login !== null) {
+            VisitorIdentity::accountConversationStarted($session, $message, $login);
         }
 
         $payload = [];

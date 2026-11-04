@@ -145,8 +145,64 @@ class TypedEmailTest extends TestCase
 
         $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], []), 422, ['field' => 'identity']);
         $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], ['email' => 'a@example.test', 'order_token' => 'x']), 422, ['field' => 'identity']);
-        $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], ['order_token' => 'x']), 422, ['field' => 'identity']);
-        $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], ['login_token' => 'x']), 422, ['field' => 'identity']);
+        $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], ['email' => 'a@example.test', 'login_token' => 'x']), 422, ['field' => 'identity']);
+        $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], ['order_token' => 'x', 'login_token' => 'x']), 422, ['field' => 'identity']);
+        $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], ['email' => 'a@example.test', 'order_token' => null]), 422, ['field' => 'identity']);
+
+        // Empty or blank: null after TrimStrings/ConvertEmptyStringsToNull,
+        // still the email field (the widget shows askInvalid).
+        $this->assertJsonResponse($this->identify($site, $chat['token'], ''), 422, ['field' => 'email']);
+        $this->assertJsonResponse($this->identify($site, $chat['token'], '   '), 422, ['field' => 'email']);
+        $this->assertJsonResponse($this->identify($site, $chat['token'], null), 422, ['field' => 'email']);
+
+        // A lone token is a token attempt now: one 403 for every failure.
+        $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], ['order_token' => 'x']), 403, ['error' => 'identity_rejected']);
+        $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], ['login_token' => 'x']), 403, ['error' => 'identity_rejected']);
+        $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], ['order_token' => '']), 403, ['error' => 'identity_rejected']);
+
+        $this->assertSame(0, (int) $chat['session']->fresh()->identity);
+        $this->assertCount(0, $this->lineItems($chat['conversation']));
+    }
+
+    public function test_typed_address_becomes_the_conversation_email()
+    {
+        $site = $this->makeSite();
+        $existing = Customer::create('main@example.test', ['first_name' => 'Real']);
+        $existing->addEmail('second@example.test');
+        $chat = $this->startChat($site);
+
+        $this->identify($site, $chat['token'], 'Second@example.test')->assertStatus(200);
+
+        $conversation = $chat['conversation']->fresh();
+        $this->assertSame((int) $existing->id, (int) $conversation->customer_id);
+        $this->assertSame('second@example.test', $conversation->customer_email);
+    }
+
+    public function test_email_without_a_visible_conversation_links_the_session_only()
+    {
+        $site = $this->makeSite();
+        $token = $this->newChatToken();
+        $session = \Modules\WordPressChat\Services\VisitorAuth::claim($site, $token);
+        $threads = Thread::count();
+
+        $response = $this->identify($site, $token, 'early@example.test');
+        $response->assertStatus(200);
+        $this->assertSame(['level' => 'email', 'account' => false], $response->json()['identity']);
+        $this->assertNull($response->json()['conversation']);
+
+        $session = $session->fresh();
+        $this->assertSame(1, (int) $session->identity);
+        $this->assertSame('early@example.test', Customer::find($session->customer_id)->getMainEmail());
+        $this->assertSame($threads, Thread::count());
+
+        $this->assertJsonResponse($this->identify($site, $token, 'again@example.test'), 409, ['error' => 'already_identified']);
+
+        // The first message is filed under the linked customer.
+        $sent = $this->api('POST', $site, '/messages', $token, ['text' => 'Hi', 'client_message_id' => bin2hex(random_bytes(8))]);
+        $sent->assertStatus(201);
+        $this->assertSame('email', $sent->json()['identity']['level']);
+        $conversation = Conversation::find(Message::find($sent->json()['message']['id'])->conversation_id);
+        $this->assertSame((int) $session->customer_id, (int) $conversation->customer_id);
     }
 
     public function test_identity_without_token_is_401()

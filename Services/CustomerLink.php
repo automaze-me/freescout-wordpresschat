@@ -59,11 +59,18 @@ class CustomerLink
      * Makes $customer the customer of $conversation and of $session. This
      * conversation's customer threads written by the old placeholder move
      * with it; other browsers' threads stay as they are.
+     *
+     * $provided is the address the visitor gave (typed, account or billing
+     * email). It becomes the conversation's customer_email when it belongs
+     * to $customer, so replies go where the visitor chose; otherwise the
+     * customer's main email does.
      */
-    public static function attach(Conversation $conversation, Customer $customer, Session $session): void
+    public static function attach(Conversation $conversation, Customer $customer, Session $session, string $provided): void
     {
         $oldId = (int) $session->customer_id;
-        $email = $customer->getMainEmail();
+        $email = $provided !== '' && $customer->emails()->where('email', $provided)->exists()
+            ? $provided
+            : $customer->getMainEmail();
 
         if ((int) $conversation->customer_id !== (int) $customer->id) {
             $conversation->changeCustomer($email, $customer, null, $customer);

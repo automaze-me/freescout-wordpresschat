@@ -57,6 +57,16 @@ class InboundMessage
                 // or a conversation. The locked row is the one used below.
                 $session = Session::where('id', $session->id)->lockForUpdate()->first();
 
+                // A lapsed login lets go of the account's customer, so a new
+                // chat by whoever now sits at this browser is never filed
+                // under the account holder (as on logout).
+                if ((int) $session->identity === Session::IDENTITY_NONE
+                    && (int) $session->wp_user_id > 0
+                    && !$session->accountFresh()
+                ) {
+                    VisitorIdentity::forgetAccount($session);
+                }
+
                 $customer = VisitorCustomer::forSession($session);
 
                 $conversation = self::continuable($session);
@@ -183,7 +193,7 @@ class InboundMessage
      * no longer sees (an account chat after the login lapsed) is never
      * continued.
      */
-    private static function continuable(Session $session)
+    public static function continuable(Session $session): ?Conversation
     {
         $conversation = Visibility::latestConversation($session);
 

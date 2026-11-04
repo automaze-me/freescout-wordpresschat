@@ -17,7 +17,8 @@ class AccessLevel
     /**
      * The level of the browser behind $session on the conversation of
      * $access. A redeemed link wins; then a fresh login of the account the
-     * conversation is bound to; then what the visitor typed.
+     * conversation is bound to, on the same site (WordPress user ids are
+     * per site); then what the visitor typed.
      */
     public static function forAccess(Access $access, Session $session, ConversationState $state): int
     {
@@ -26,6 +27,7 @@ class AccessLevel
         }
 
         if ((int) $state->wp_user_id > 0
+            && (int) $state->site_id === (int) $session->site_id
             && (int) $session->wp_user_id === (int) $state->wp_user_id
             && $session->accountFresh()
         ) {

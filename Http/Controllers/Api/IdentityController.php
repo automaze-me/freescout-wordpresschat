@@ -4,71 +4,188 @@ namespace Modules\WordPressChat\Http\Controllers\Api;
 
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Modules\WordPressChat\Entities\Session;
+use Modules\WordPressChat\Entities\Site;
 use Modules\WordPressChat\Exceptions\AlreadyIdentifiedException;
+use Modules\WordPressChat\Services\IdentityPayload;
 use Modules\WordPressChat\Services\Visibility;
 use Modules\WordPressChat\Services\VisitorAuth;
 use Modules\WordPressChat\Services\VisitorIdentity;
 
 class IdentityController extends Controller
 {
-    const MAX_EMAIL_LENGTH = 191;
+    const FIELDS = ['email', 'order_token', 'login_token'];
 
     /**
      * POST …/identity with exactly one of `email`, `order_token`,
-     * `login_token`. Validation is by hand (see ChatController::send()).
-     * Until Task 6 only `email` is handled; a lone token answers 422
-     * `identity`.
+     * `login_token` (a key counts as given even when its value is empty).
+     * Validation is by hand (see ChatController::send()).
+     *
+     * With X-Chat-Token every field works and the answer is 200
+     * {identity, conversation}. Without it only a lone `login_token` does,
+     * together with `new_token`: account discovery on a new device
+     * (Ruling P6).
+     *
+     * Errors: 401 unknown or missing chat token, 403 identity_rejected for
+     * every token failure, 409 already_identified, 422 validation.
      */
     public function identify(Request $request)
     {
         $site  = $request->attributes->get('wordpresschat.site');
         $token = $request->header('X-Chat-Token');
 
-        $session = ($token !== null && $token !== '') ? VisitorAuth::resolve($site, $token) : null;
-        if (!$session) {
-            return response()->json(['error' => 'unauthorized'], 401);
-        }
+        $given = array_values(array_filter(self::FIELDS, function ($key) use ($request) {
+            return $request->has($key);
+        }));
 
-        $given = 0;
-        foreach (['email', 'order_token', 'login_token'] as $key) {
-            if ($request->input($key) !== null) {
-                $given++;
+        if ($token === null || $token === '') {
+            if ($given === ['login_token']) {
+                return $this->discover($request, $site);
             }
+
+            return $this->unauthorized();
         }
 
-        if ($given !== 1 || $request->input('email') === null) {
+        $session = VisitorAuth::resolve($site, $token);
+        if (!$session) {
+            return $this->unauthorized();
+        }
+
+        if (count($given) !== 1) {
             return $this->invalid('identity');
         }
 
-        $raw = $request->input('email');
-        $email = null;
-        if (is_string($raw) && mb_check_encoding($raw, 'UTF-8') && mb_strlen(trim($raw), 'UTF-8') <= self::MAX_EMAIL_LENGTH) {
-            $clean = \App\Email::sanitizeEmail(trim($raw));
-
-            // sanitizeEmail() rewrites what it dislikes; accept only an
-            // address it left alone apart from case.
-            if ($clean
-                && $clean === mb_strtolower(trim($raw), 'UTF-8')
-                && filter_var($clean, FILTER_VALIDATE_EMAIL)
-            ) {
-                $email = $clean;
-            }
+        switch ($given[0]) {
+            case 'order_token':
+                return $this->order($request, $site, $session);
+            case 'login_token':
+                return $this->login($request, $site, $session);
+            default:
+                return $this->typedEmail($request, $session);
         }
-        if (!$email) {
+    }
+
+    /**
+     * POST …/logout: the visitor logged out of WordPress (Ruling P5). The
+     * session forgets the account; the widget then forgets the session.
+     */
+    public function logout(Request $request)
+    {
+        $site  = $request->attributes->get('wordpresschat.site');
+        $token = $request->header('X-Chat-Token');
+
+        $session = ($token !== null && $token !== '') ? VisitorAuth::resolve($site, $token) : null;
+        if (!$session) {
+            return $this->unauthorized();
+        }
+
+        VisitorIdentity::logout($session);
+
+        return response('', 204);
+    }
+
+    private function typedEmail(Request $request, Session $session)
+    {
+        $raw = $request->input('email');
+        $email = is_string($raw) ? IdentityPayload::cleanEmail(trim($raw)) : null;
+
+        if ($email === null) {
             return $this->invalid('email');
         }
 
         try {
             VisitorIdentity::typedEmail($session, $email);
         } catch (AlreadyIdentifiedException $e) {
-            return response()->json(['error' => 'already_identified'], 409);
+            return $this->alreadyIdentified();
         }
 
+        return $this->status($session);
+    }
+
+    private function order(Request $request, Site $site, Session $session)
+    {
+        // Opened before the identity transaction (Ruling R4).
+        $payload = IdentityPayload::order($site, $request->input('order_token'), (string) $session->token_hash);
+        if ($payload === null) {
+            return $this->rejected();
+        }
+
+        try {
+            VisitorIdentity::order($session, $payload);
+        } catch (AlreadyIdentifiedException $e) {
+            return $this->alreadyIdentified();
+        }
+
+        return $this->status($session);
+    }
+
+    private function login(Request $request, Site $site, Session $session)
+    {
+        $payload = IdentityPayload::login($site, $request->input('login_token'), (string) $session->token_hash);
+        if ($payload === null) {
+            return $this->rejected();
+        }
+
+        VisitorIdentity::login($session, $payload);
+
+        return $this->status($session);
+    }
+
+    /**
+     * A logged-in visitor on a device without a chat token. The login token
+     * is bound to `new_token`, the token the widget generated. A session is
+     * created only when the account has chats on this site; otherwise
+     * nothing is stored and the answer is {"linked": false} (spec §10).
+     */
+    private function discover(Request $request, Site $site)
+    {
+        $newToken = $request->input('new_token');
+
+        if (!is_string($newToken) || !preg_match('/\A[A-Za-z0-9_-]{43}\z/', $newToken)) {
+            return $this->invalid('new_token');
+        }
+
+        $payload = IdentityPayload::login($site, $request->input('login_token'), hash('sha256', $newToken));
+        if ($payload === null) {
+            return $this->rejected();
+        }
+
+        if (!VisitorIdentity::hasAccountChats((int) $site->id, $payload['uid'])) {
+            return response()->json(['linked' => false]);
+        }
+
+        $session = VisitorAuth::claim($site, $newToken);
+        if (!$session) {
+            return response()->json(['error' => 'conflict'], 409);
+        }
+
+        VisitorIdentity::login($session, $payload);
+
+        return response()->json(['token' => $newToken] + Visibility::status($session->fresh() ?: $session));
+    }
+
+    private function status(Session $session)
+    {
         return response()->json(Visibility::status($session->fresh() ?: $session));
     }
 
     private function invalid($field)
     {
         return response()->json(['error' => 'validation', 'field' => $field], 422);
+    }
+
+    private function unauthorized()
+    {
+        return response()->json(['error' => 'unauthorized'], 401);
+    }
+
+    private function rejected()
+    {
+        return response()->json(['error' => 'identity_rejected'], 403);
+    }
+
+    private function alreadyIdentified()
+    {
+        return response()->json(['error' => 'already_identified'], 409);
     }
 }
