@@ -80,6 +80,17 @@ class RouteReplyChannel
             $message->thread_id = $thread->id;
         }
 
+        // A repeated firing (a retry of core's listener, a duplicate event)
+        // must not re-queue a reply that is being or has been sent. A failed
+        // one is not re-sent either: the agent saw the red line item.
+        if (in_array((int) $message->email_status, [
+            Message::EMAIL_SENDING,
+            Message::EMAIL_SENT,
+            Message::EMAIL_FAILED,
+        ], true)) {
+            return true;
+        }
+
         $message->conversation_id = $conversation->id;
         $message->direction = Message::DIRECTION_OUT;
         $message->via = Message::VIA_EMAIL;

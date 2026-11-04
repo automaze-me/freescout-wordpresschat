@@ -272,4 +272,56 @@ class AgentEmailChoiceTest extends TestCase
         $this->assertFalse($this->skip($conversation, $thread));
         Queue::assertNothingPushed();
     }
+
+    public function test_undo_then_resend_as_chat_before_the_job_sends_no_email()
+    {
+        list(, , $conversation) = $this->chat();
+        $thread = $this->capture($this->agentThread($conversation), 'email');
+        $mailer = $this->fake();
+
+        Queue::fake();
+        $this->skip($conversation, $thread);
+        $job = Queue::pushed(SendChatEmail::class)->first();
+
+        $thread->state = Thread::STATE_DRAFT;
+        $thread->save();
+        $thread->state = Thread::STATE_PUBLISHED;
+        $thread->save();
+        $thread = $this->capture(Thread::find($thread->id), 'chat');
+        $this->assertNull($this->metaOf($thread));
+
+        app()->call([$job, 'handle']);
+
+        $this->assertCount(0, $mailer->calls);
+        $row = Message::where('thread_id', $thread->id)->firstOrFail();
+        $this->assertNull($row->email_status);
+
+        \Eventy::action('chat_conversation.send_reply', $conversation, collect([$thread]), $conversation->customer);
+        $row = Message::where('thread_id', $thread->id)->firstOrFail();
+        $this->assertSame(Message::VIA_CHAT, (int) $row->via);
+        $this->assertNotNull($row->published_at);
+    }
+
+    public function test_repeated_intercept_does_not_resend()
+    {
+        foreach ([Message::EMAIL_SENDING, Message::EMAIL_SENT, Message::EMAIL_FAILED] as $status) {
+            list(, , $conversation) = $this->chat();
+            $thread = $this->capture($this->agentThread($conversation), 'email');
+
+            Queue::fake();
+            $this->skip($conversation, $thread);
+            Message::where('thread_id', $thread->id)->update([
+                'email_status' => $status,
+                'published_at' => now()->subMinute()->startOfSecond(),
+            ]);
+            $before = Message::where('thread_id', $thread->id)->firstOrFail()->getAttributes();
+
+            Queue::fake();
+            $this->assertTrue($this->skip($conversation, $thread));
+
+            Queue::assertNothingPushed();
+            $after = Message::where('thread_id', $thread->id)->firstOrFail()->getAttributes();
+            $this->assertEquals($before, $after, 'status '.$status);
+        }
+    }
 }

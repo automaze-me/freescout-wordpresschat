@@ -15,6 +15,7 @@ use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Services\ChatEmail;
 use Modules\WordPressChat\Services\ContinueLink;
 use Modules\WordPressChat\Services\CoreReplyMailer;
+use Modules\WordPressChat\Services\ReplyChannel;
 use Modules\WordPressChat\Services\DueEmails;
 use Modules\WordPressChat\Services\FailureLineItem;
 
@@ -219,14 +220,25 @@ class SendChatEmail implements ShouldQueue
             return;
         }
 
-        $published = array_map('intval', Thread::whereIn('id', $queued->pluck('thread_id')->all())
+        // Read as they are now: an undone email choice re-sent as chat has
+        // its meta cleared, and must not also go out by email.
+        $threads = Thread::whereIn('id', $queued->pluck('thread_id')->all())
             ->where('state', Thread::STATE_PUBLISHED)
-            ->pluck('id')
-            ->all());
+            ->get()
+            ->keyBy('id');
 
-        $drop = $queued->filter(function ($row) use ($published) {
-            return !in_array((int) $row->thread_id, $published, true)
-                || ((int) $row->via === Message::VIA_CHAT && $row->seen_at !== null);
+        $drop = $queued->filter(function ($row) use ($threads) {
+            $thread = $threads->get((int) $row->thread_id);
+
+            if (!$thread) {
+                return true;
+            }
+
+            if ((int) $row->via === Message::VIA_EMAIL) {
+                return $thread->getMeta(ReplyChannel::META) !== ReplyChannel::EMAIL;
+            }
+
+            return $row->seen_at !== null;
         })->pluck('id')->all();
 
         if ($drop) {
