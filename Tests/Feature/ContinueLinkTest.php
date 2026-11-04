@@ -439,6 +439,131 @@ class ContinueLinkTest extends TestCase
         $this->assertSame($customers, Customer::count());
     }
 
+    /**
+     * Final review I1: "Continue chat" continues that conversation, also
+     * when the browser has a newer open chat of its own.
+     */
+    public function test_redeemed_conversation_wins_over_a_newer_open_one()
+    {
+        $site = $this->makeSite();
+        $old = $this->startChat($site, 'Old chat');
+        $conversation = $old['conversation'];
+        $this->typeEmail($site, $old['token'], 'anna@example.test');
+        $customerId = (int) Conversation::find($conversation->id)->customer_id;
+        $link = $this->mint($conversation);
+
+        // This browser's own chat, newer and still open.
+        $mine = $this->startChat($site, 'Newer chat');
+        $newer = $mine['conversation'];
+        $this->assertGreaterThan((int) $conversation->id, (int) $newer->id);
+        $this->assertNotSame($customerId, (int) $newer->customer_id);
+
+        $key = ConversationState::of($conversation)->public_id;
+        $response = $this->api('POST', $site, '/continue', $mine['token'], ['link' => $link]);
+        $response->assertStatus(200);
+        $this->assertSame($key, $response->json()['conversation']['key']);
+        $this->assertSame((int) $conversation->id, (int) $this->sessionOf($mine['token'])->current_conversation_id);
+
+        $sent = $this->say($site, $mine['token'], 'After redeeming');
+        $message = Message::find($sent->json()['message']['id']);
+        $this->assertSame((int) $conversation->id, (int) $message->conversation_id);
+        $this->assertSame($customerId, (int) $message->thread->customer_id);
+        $this->assertSame($customerId, (int) $message->thread->created_by_customer_id);
+        $this->assertSame($key, $sent->json()['conversation']['key']);
+
+        $poll = $this->poll($site, $mine['token']);
+        $this->assertSame($key, $poll['conversation']['key']);
+        $this->assertSame('verified', $poll['identity']['level']);
+        $this->assertSame(1, Message::where('conversation_id', $newer->id)->count());
+    }
+
+    /** I1: a newer closed chat neither stops polling nor takes the next message. */
+    public function test_redeemed_open_conversation_wins_over_a_newer_closed_one()
+    {
+        $site = $this->makeSite();
+        $old = $this->startChat($site, 'Old chat');
+        $conversation = $old['conversation'];
+        $this->typeEmail($site, $old['token'], 'anna@example.test');
+        $customerId = (int) Conversation::find($conversation->id)->customer_id;
+        $link = $this->mint($conversation);
+
+        $mine = $this->startChat($site, 'Newer chat');
+        $newer = Conversation::find($mine['conversation']->id);
+        $newer->status = Conversation::STATUS_CLOSED;
+        $newer->closed_at = now()->subHour();
+        $newer->save();
+        $this->assertFalse($this->poll($site, $mine['token'])['conversation']['poll']);
+
+        $key = ConversationState::of($conversation)->public_id;
+        $response = $this->api('POST', $site, '/continue', $mine['token'], ['link' => $link]);
+        $response->assertStatus(200);
+        $this->assertSame($key, $response->json()['conversation']['key']);
+        $this->assertSame('open', $response->json()['conversation']['status']);
+        $this->assertTrue($response->json()['conversation']['poll']);
+
+        $poll = $this->poll($site, $mine['token']);
+        $this->assertSame($key, $poll['conversation']['key']);
+        $this->assertTrue($poll['conversation']['poll']);
+
+        $conversations = Conversation::count();
+        $message = Message::find($this->say($site, $mine['token'], 'After redeeming')->json()['message']['id']);
+        $this->assertSame((int) $conversation->id, (int) $message->conversation_id);
+        $this->assertSame($customerId, (int) $message->thread->customer_id);
+        $this->assertSame($conversations, Conversation::count());
+    }
+
+    /**
+     * I1: a session holding a fresh account login keeps the account's
+     * customer when it redeems another customer's link; it still writes as
+     * the redeemed conversation's customer there, and a later conversation
+     * is the account's, with the account's address.
+     */
+    public function test_fresh_account_session_keeps_its_customer_on_redeeming()
+    {
+        $site = $this->makeSite();
+        $old = $this->startChat($site, 'Old chat');
+        $conversation = $old['conversation'];
+        $this->typeEmail($site, $old['token'], 'anna@example.test');
+        $customerId = (int) Conversation::find($conversation->id)->customer_id;
+        $link = $this->mint($conversation);
+
+        $new = $this->newChatToken();
+        $acct = $this->startChat($site, 'Account chat', [
+            'new_token'   => $new,
+            'login_token' => $this->loginToken($site, $new, ['uid' => 77, 'email' => 'acct@example.test', 'name' => 'Acct']),
+        ]);
+        $session = $this->sessionOf($acct['token']);
+        $accountCustomer = (int) $session->customer_id;
+        $this->assertTrue($session->accountFresh());
+        $this->assertNotSame($customerId, $accountCustomer);
+
+        $this->api('POST', $site, '/continue', $acct['token'], ['link' => $link])->assertStatus(200);
+
+        $session = $this->sessionOf($acct['token']);
+        $this->assertSame($accountCustomer, (int) $session->customer_id);
+        $this->assertSame('acct@example.test', $session->email);
+        $this->assertSame((int) $conversation->id, (int) $session->current_conversation_id);
+
+        $message = Message::find($this->say($site, $acct['token'], 'In the redeemed chat')->json()['message']['id']);
+        $this->assertSame((int) $conversation->id, (int) $message->conversation_id);
+        $this->assertSame($customerId, (int) $message->thread->customer_id);
+
+        // Both closed: the next message starts the account's own conversation.
+        foreach ([$conversation->id, $acct['conversation']->id] as $id) {
+            $closed = Conversation::find($id);
+            $closed->status = Conversation::STATUS_CLOSED;
+            $closed->closed_at = now()->subHour();
+            $closed->save();
+        }
+
+        $message = Message::find($this->say($site, $acct['token'], 'Later')->json()['message']['id']);
+        $next = Conversation::find($message->conversation_id);
+        $this->assertNotContains((int) $next->id, [(int) $conversation->id, (int) $acct['conversation']->id]);
+        $this->assertSame($accountCustomer, (int) $next->customer_id);
+        $this->assertSame('acct@example.test', $next->customer_email);
+        $this->assertSame(77, (int) ConversationState::of($next)->wp_user_id);
+    }
+
     public function test_get_does_not_redeem()
     {
         $site = $this->makeSite();

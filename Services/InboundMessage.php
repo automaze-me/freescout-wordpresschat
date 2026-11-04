@@ -67,16 +67,23 @@ class InboundMessage
                     VisitorIdentity::forgetAccount($session);
                 }
 
-                $conversation = self::continuable($session);
+                // The conversation this browser is in; a closed one is
+                // followed by a new conversation.
+                $latest = Visibility::latestConversation($session);
+                $conversation = self::openOrNull($latest);
                 $isNew = $conversation === null;
 
+                // A browser verified on the target conversation writes as
+                // that conversation's customer; any other as the session's.
                 $customer = $isNew ? null : self::verifiedCustomer($session, $conversation);
                 if (!$customer) {
                     $customer = VisitorCustomer::forSession($session);
                 }
 
                 if ($isNew) {
-                    $conversation = self::createConversation($site, $customer, $text);
+                    $conversation = self::createConversation(
+                        $site, $customer, $text, self::customerEmail($session, $customer, $latest)
+                    );
 
                     Access::create([
                         'session_id'      => $session->id,
@@ -96,6 +103,13 @@ class InboundMessage
                     ]);
                 } else {
                     self::reactivate($conversation);
+                }
+
+                // The browser's current conversation is where its last
+                // message went (Visibility::latestConversation()).
+                if ((int) $session->current_conversation_id !== (int) $conversation->id) {
+                    $session->current_conversation_id = $conversation->id;
+                    $session->save();
                 }
 
                 $thread = new Thread();
@@ -189,17 +203,20 @@ class InboundMessage
     }
 
     /**
-     * The session's latest visible conversation, unless it was closed or is
-     * no longer published (deleted, merged away): then the next message
-     * starts a new conversation. Active, Pending and Spam ones continue,
-     * also after a cut-off (spec §6.4 rule 6). A conversation the session
-     * no longer sees (an account chat after the login lapsed) is never
-     * continued.
+     * The conversation the browser is in (Visibility::latestConversation()),
+     * unless it was closed or is no longer published (deleted, merged away):
+     * then the next message starts a new conversation. Active, Pending and
+     * Spam ones continue, also after a cut-off (spec §6.4 rule 6). A
+     * conversation the session no longer sees (an account chat after the
+     * login lapsed) is never continued.
      */
     public static function continuable(Session $session): ?Conversation
     {
-        $conversation = Visibility::latestConversation($session);
+        return self::openOrNull(Visibility::latestConversation($session));
+    }
 
+    private static function openOrNull(?Conversation $conversation): ?Conversation
+    {
         if (!$conversation
             || $conversation->status == Conversation::STATUS_CLOSED
             || $conversation->state != Conversation::STATE_PUBLISHED
@@ -220,26 +237,64 @@ class InboundMessage
      */
     private static function verifiedCustomer(Session $session, Conversation $conversation): ?Customer
     {
-        if (!$conversation->customer_id) {
+        if (!$conversation->customer_id || !self::isVerified($session, $conversation)) {
             return null;
         }
 
-        $verified = Access::where('session_id', $session->id)
+        return Customer::find($conversation->customer_id);
+    }
+
+    private static function isVerified(Session $session, Conversation $conversation): bool
+    {
+        return Access::where('session_id', $session->id)
             ->where('conversation_id', $conversation->id)
             ->whereNotNull('verified_at')
             ->exists();
-
-        return $verified ? Customer::find($conversation->customer_id) : null;
     }
 
-    private static function createConversation(Site $site, Customer $customer, string $text): Conversation
+    /**
+     * The customer_email of a conversation this session starts for
+     * $customer. $previous is the conversation the browser was in (closed
+     * by now, or null). The first that applies:
+     * 1. the session is verified on $previous: its customer_email;
+     * 2. the address the session was linked by (sessions.email);
+     * 3. the customer's main email;
+     * 4. '' (an anonymous placeholder).
+     * 1 and 2 only when the address belongs to $customer: a fresh account
+     * session that redeemed another customer's link writes as the account.
+     *
+     * 3 reads what Customer::getMainEmail() returns (the first email row)
+     * without its query cache: that caches the customer's email list for
+     * the rest of the process, and the session's customer may still get an
+     * email later in it (a placeholder upgraded in place).
+     */
+    private static function customerEmail(Session $session, Customer $customer, ?Conversation $previous): string
+    {
+        $candidates = [];
+
+        if ($previous && self::isVerified($session, $previous)) {
+            $candidates[] = (string) $previous->customer_email;
+        }
+
+        $candidates[] = (string) $session->email;
+
+        foreach ($candidates as $email) {
+            if ($email !== '' && $customer->emails()->where('email', $email)->exists()) {
+                return $email;
+            }
+        }
+
+        return (string) $customer->emails()->orderBy('id')->value('email');
+    }
+
+    private static function createConversation(Site $site, Customer $customer, string $text, string $email): Conversation
     {
         $conversation = new Conversation();
         $conversation->type                   = Conversation::TYPE_CHAT;
         $conversation->subject                = Conversation::subjectFromText($text);
         $conversation->mailbox_id             = $site->mailbox_id;
         $conversation->customer_id            = $customer->id;
-        $conversation->customer_email         = '';
+        $conversation->customer_email         = $email;
         $conversation->created_by_customer_id = $customer->id;
         $conversation->channel                = WordPressChat::CHANNEL;
         $conversation->source_via             = Conversation::PERSON_CUSTOMER;

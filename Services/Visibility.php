@@ -153,22 +153,23 @@ class Visibility
     }
 
     /**
-     * The granted conversation with the highest id, or null.
+     * The conversation this browser is in, or null when it sees none: the
+     * session's current conversation (current_conversation_id, set by its
+     * last message, a redeemed link, a login that bound its chat, or account
+     * discovery) while it still has a grant there; otherwise the granted
+     * conversation with the highest id.
      */
     public static function latestConversation(Session $session): ?Conversation
     {
         $resolved = self::resolve($session);
+        $id = self::currentId($session, $resolved);
 
-        if (!$resolved['grants']) {
-            return null;
-        }
-
-        return $resolved['conversations'][max(array_keys($resolved['grants']))];
+        return $id === null ? null : $resolved['conversations'][$id];
     }
 
     /**
-     * The widget's summary for the session, from its latest granted
-     * conversation: `identity` {level, account} and `conversation`
+     * The widget's summary for the session, from the conversation it is in
+     * (latestConversation()): `identity` {level, account} and `conversation`
      * {status, poll, key, notice}, or null when it sees none. Then the level
      * comes from the session alone (Ruling C5). `account` says whether the
      * browser holds a fresh account login, which the widget ends on logout.
@@ -178,9 +179,9 @@ class Visibility
         $resolved = self::resolve($session);
         $conversation = null;
         $level = null;
+        $id = self::currentId($session, $resolved);
 
-        if ($resolved['grants']) {
-            $id = max(array_keys($resolved['grants']));
+        if ($id !== null) {
             $conv = $resolved['conversations'][$id];
             $grant = $resolved['grants'][$id];
             $level = $grant['level'];
@@ -204,6 +205,24 @@ class Visibility
             ],
             'conversation' => $conversation,
         ];
+    }
+
+    /**
+     * The id latestConversation() returns, from resolve()'s result.
+     */
+    private static function currentId(Session $session, array $resolved): ?int
+    {
+        if (!$resolved['grants']) {
+            return null;
+        }
+
+        $current = (int) $session->current_conversation_id;
+
+        if ($current > 0 && isset($resolved['grants'][$current])) {
+            return $current;
+        }
+
+        return max(array_keys($resolved['grants']));
     }
 
     /**

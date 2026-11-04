@@ -87,8 +87,12 @@ class ContinueLink
      *    rows (InboundMessage, VisitorIdentity::login);
      * 3. rule 8: the conversation's cut-off, unless it already has one
      *    (the first cut-off wins, as in RecordCustomerEmail);
-     * 4. the session's customer becomes the conversation's customer;
-     * 5. the line item "Email verified via link".
+     * 4. the conversation becomes the session's current one, so the next
+     *    message continues it (Visibility::latestConversation());
+     * 5. the session's customer becomes the conversation's customer, and
+     *    its email the conversation's customer_email, unless the session
+     *    holds a fresh account login: it keeps the account's customer;
+     * 6. the line item "Email verified via link".
      */
     public static function redeem(Site $site, Session $session, string $token): ?Conversation
     {
@@ -143,10 +147,15 @@ class ContinueLink
                     'cutoff_reason'     => ConversationState::CUTOFF_VERIFIED,
                 ]);
 
-            if ((int) $conversation->customer_id > 0 && (int) $locked->customer_id !== (int) $conversation->customer_id) {
+            $locked->current_conversation_id = $conversation->id;
+
+            if ((int) $conversation->customer_id > 0 && !$locked->accountFresh()) {
+                $email = (string) $conversation->customer_email;
                 $locked->customer_id = $conversation->customer_id;
-                $locked->save();
+                $locked->email = $email !== '' ? $email : null;
             }
+
+            $locked->save();
 
             IdentityLineItem::create($conversation, __('Email verified via link'));
 

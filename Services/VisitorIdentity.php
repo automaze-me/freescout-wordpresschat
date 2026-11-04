@@ -48,6 +48,7 @@ class VisitorIdentity
             }
 
             $locked->identity = Session::IDENTITY_EMAIL;
+            $locked->email = $email;
             $locked->save();
         });
     }
@@ -91,6 +92,7 @@ class VisitorIdentity
             }
 
             $locked->identity = Session::IDENTITY_ORDER;
+            $locked->email = $email;
             $locked->save();
         });
     }
@@ -107,7 +109,14 @@ class VisitorIdentity
      *    this site, so every logged-in device sees them (spec §5.5);
      * 4. Ruling P12: the session's open conversation is bound to the
      *    account if it is still anonymous (no account, placeholder
-     *    customer). That happens once, so the line item is written once.
+     *    customer) and this session wrote in it within ACCOUNT_TTL. That
+     *    happens once, so the line item is written once. An older one was
+     *    left by someone else at this browser: it is not bound, and its
+     *    placeholder is not upgraded either (this session lets go of it);
+     * 5. the session's current conversation becomes the bound one, or,
+     *    when it has none yet, the newest account chat it now sees.
+     * The session's email becomes the account email whenever the session
+     * takes the account's customer.
      */
     public static function login(Session $session, array $payload): void
     {
@@ -131,10 +140,18 @@ class VisitorIdentity
                 && (int) $open->customer_id === (int) $current->id
                 && self::isPlaceholder($current)
             ) {
-                $state = ConversationState::of($open);
+                if (self::wroteRecently($locked, $open)) {
+                    $state = ConversationState::of($open);
 
-                if ($state->wp_user_id === null) {
-                    $bind = [$open, $state];
+                    if ($state->wp_user_id === null) {
+                        $bind = [$open, $state];
+                    }
+                } else {
+                    // An old anonymous chat at this browser (Ruling P12,
+                    // tightened): its placeholder stays as it is, so it is
+                    // never upgraded with this account's email and name.
+                    self::releaseCustomer($locked);
+                    $current = null;
                 }
             }
 
@@ -144,6 +161,7 @@ class VisitorIdentity
             $customer = $current;
             if (!$current || self::isPlaceholder($current)) {
                 $customer = CustomerLink::resolve($locked, $email, (string) $payload['name']);
+                $locked->email = $email;
             }
 
             $have = Access::where('session_id', $locked->id)->pluck('conversation_id')->map(function ($id) {
@@ -171,8 +189,24 @@ class VisitorIdentity
                 // the session's customer.
                 CustomerLink::attach($conversation, $customer, $locked, $email);
                 IdentityLineItem::create($conversation, __('Logged in as account :email', ['email' => $email]));
+                $locked->current_conversation_id = $conversation->id;
             } else {
                 $locked->customer_id = $customer->id;
+            }
+
+            // Discovery: a session in no conversation yet is in the newest
+            // account chat it now sees.
+            if (!(int) $locked->current_conversation_id && $chats->isNotEmpty()) {
+                $granted = array_intersect(
+                    array_keys(Visibility::grants($locked)),
+                    $chats->map(function ($id) {
+                        return (int) $id;
+                    })->all()
+                );
+
+                if ($granted) {
+                    $locked->current_conversation_id = max($granted);
+                }
             }
 
             $locked->save();
@@ -247,14 +281,43 @@ class VisitorIdentity
         $locked->account_until = null;
 
         if ((int) $locked->identity === Session::IDENTITY_NONE) {
-            CustomerChannel::where('channel', WordPressChat::CHANNEL)
-                ->where('channel_id', $locked->public_id)
-                ->delete();
-
-            $locked->customer_id = null;
+            self::releaseCustomer($locked);
         }
 
         $locked->save();
+    }
+
+    /**
+     * The session lets go of its customer, its email and its Website chat
+     * channel row: VisitorCustomer::forSession() would adopt that row's
+     * owner again. Whoever writes next starts under a new placeholder. The
+     * caller holds the session lock and saves the row.
+     */
+    private static function releaseCustomer(Session $locked): void
+    {
+        CustomerChannel::where('channel', WordPressChat::CHANNEL)
+            ->where('channel_id', $locked->public_id)
+            ->delete();
+
+        $locked->customer_id = null;
+        $locked->email = null;
+    }
+
+    /**
+     * Whether this session's latest visitor message in $conversation is
+     * less than ACCOUNT_TTL old.
+     */
+    private static function wroteRecently(Session $locked, Conversation $conversation): bool
+    {
+        $last = Message::where('conversation_id', $conversation->id)
+            ->where('session_id', $locked->id)
+            ->where('direction', Message::DIRECTION_IN)
+            ->orderBy('id', 'desc')
+            ->first();
+
+        return $last !== null
+            && $last->created_at !== null
+            && $last->created_at->gt(now()->subSeconds(self::ACCOUNT_TTL));
     }
 
     /**

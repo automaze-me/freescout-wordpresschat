@@ -165,6 +165,54 @@ class AccountIdentityTest extends TestCase
         $this->assertSame(1, Access::where('session_id', $chat['session']->id)->count());
     }
 
+    /**
+     * Final review M1 (Ruling P12, tightened): an anonymous chat this
+     * browser last wrote in more than ACCOUNT_TTL ago was left by someone
+     * else. A login neither binds it nor upgrades its placeholder.
+     */
+    public function test_login_does_not_bind_an_old_anonymous_chat()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site, 'Left here three hours ago');
+        $placeholder = (int) $chat['session']->customer_id;
+        Message::where('conversation_id', $chat['conversation']->id)->update(['created_at' => now()->subHours(3)]);
+
+        $this->api('POST', $site, '/identity', $chat['token'], [
+            'login_token' => $this->loginToken($site, $chat['token']),
+        ])->assertStatus(200);
+
+        $conversation = $chat['conversation']->fresh();
+        $this->assertNull($this->stateOf($conversation)->wp_user_id);
+        $this->assertCount(0, $this->loginLineItems($conversation));
+        $this->assertSame($placeholder, (int) $conversation->customer_id);
+        $this->assertSame('', (string) $conversation->customer_email);
+        $this->assertSame('', Customer::find($placeholder)->getMainEmail());
+        $this->assertSame('Website visitor', Customer::find($placeholder)->first_name);
+
+        // The session itself is logged in, under the account's customer.
+        $session = $chat['session']->fresh();
+        $this->assertTrue($session->accountFresh());
+        $this->assertNotSame($placeholder, (int) $session->customer_id);
+        $this->assertSame('anna@example.test', Customer::find($session->customer_id)->getMainEmail());
+    }
+
+    /** M1: within ACCOUNT_TTL the open chat is still bound (P12). */
+    public function test_login_binds_an_anonymous_chat_written_in_recently()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site, 'Written in an hour ago');
+        Message::where('conversation_id', $chat['conversation']->id)->update(['created_at' => now()->subHour()]);
+
+        $this->api('POST', $site, '/identity', $chat['token'], [
+            'login_token' => $this->loginToken($site, $chat['token']),
+        ])->assertStatus(200);
+
+        $conversation = $chat['conversation']->fresh();
+        $this->assertSame(42, (int) $this->stateOf($conversation)->wp_user_id);
+        $this->assertCount(1, $this->loginLineItems($conversation));
+        $this->assertSame('anna@example.test', $conversation->customer_email);
+    }
+
     public function test_second_device_discovers_account_chats()
     {
         $site = $this->makeSite();
@@ -181,6 +229,11 @@ class AccountIdentityTest extends TestCase
         $this->assertSame($newB, $json['token']);
         $this->assertSame(['level' => 'account', 'account' => true], $json['identity']);
         $this->assertSame($this->stateOf($a['conversation'])->public_id, $json['conversation']['key']);
+        // Final review I1: discovery puts the new session in that chat.
+        $this->assertSame(
+            (int) $a['conversation']->id,
+            (int) Session::where('token_hash', hash('sha256', $newB))->value('current_conversation_id')
+        );
 
         $this->assertSame(['Message from device A'], $this->texts($this->poll($site, $newB)));
 
