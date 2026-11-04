@@ -277,7 +277,8 @@ class SendChatEmail implements ShouldQueue
 
     /**
      * Steps 4 to 7: address, continue link, core's send. Null when sent,
-     * otherwise the reason it was not.
+     * otherwise the reason it was not. No link when the email also goes to
+     * anyone else (Ruling D5).
      */
     private function send(CoreReplyMailer $mailer, Conversation $conversation, Thread $newest, array $threadIds): ?string
     {
@@ -295,13 +296,20 @@ class SendChatEmail implements ShouldQueue
             $conversation->save();
         }
 
-        try {
-            $link = ContinueLink::mint($conversation);
-        } catch (\RuntimeException $e) {
-            \Log::error('[WordPressChat] Fallback email for conversation #'.$conversation->id.' goes without a continue link', [
-                'exception' => $e,
-            ]);
-            $link = null;
+        $link = null;
+
+        if (self::extraRecipients($conversation, $newest, $address)) {
+            // Ruling D5: a link only ever goes to the conversation's own
+            // address. The email still goes, to everyone core sends it to.
+            \Log::info('[WordPressChat] Email for conversation #'.$conversation->id.' goes without a continue link: it also goes to other recipients (To, Cc, Bcc or the mailbox\'s auto Bcc)');
+        } else {
+            try {
+                $link = ContinueLink::mint($conversation);
+            } catch (\RuntimeException $e) {
+                \Log::error('[WordPressChat] Fallback email for conversation #'.$conversation->id.' goes without a continue link', [
+                    'exception' => $e,
+                ]);
+            }
         }
 
         ChatEmail::begin((int) $conversation->id, $threadIds, $link);
@@ -311,6 +319,32 @@ class SendChatEmail implements ShouldQueue
         } finally {
             ChatEmail::end();
         }
+    }
+
+    /**
+     * Whether core's job would send this email to anyone besides $address,
+     * computed as core's SendReplyToCustomer::handle() builds its recipients
+     * from $newest (its last_thread) and the mailbox:
+     * - To: the thread's To list when it holds more than one address;
+     * - Cc and Bcc: the thread's lists without the mailbox's own addresses
+     *   and without the customer's address;
+     * - the mailbox's auto Bcc.
+     */
+    private static function extraRecipients(Conversation $conversation, Thread $newest, string $address): bool
+    {
+        $mailbox = $conversation->mailbox;
+
+        if (!$mailbox) {
+            return false;
+        }
+
+        $to = $mailbox->removeMailboxEmailsFromList($newest->getToArray());
+        $cc = \App\Misc\Mail::removeEmailFromArray($mailbox->removeMailboxEmailsFromList($newest->getCcArray()), $address);
+        $bcc = \App\Misc\Mail::removeEmailFromArray($mailbox->removeMailboxEmailsFromList($newest->getBccArray()), $address);
+        $autoBcc = $mailbox->auto_bcc ? \MailHelper::sanitizeEmails($mailbox->auto_bcc) : [];
+        $extraTo = count($to) > 1 ? \App\Misc\Mail::removeEmailFromArray($to, $address) : [];
+
+        return (bool) ($extraTo || $cc || $bcc || $autoBcc);
     }
 
     /**

@@ -539,6 +539,72 @@ class FallbackEmailTest extends TestCase
         $this->assertSame(0, Link::where('conversation_id', $conversation->id)->count());
     }
 
+    /**
+     * Final review I2 (Ruling D5: a link only ever goes to the
+     * conversation's own address). Core's job sends one message to To plus
+     * the newest reply's Cc and Bcc plus the mailbox's auto Bcc.
+     */
+    public static function extraRecipients(): array
+    {
+        return [
+            'cc'       => ['cc', ['boss@example.test']],
+            'bcc'      => ['bcc', ['audit@example.test']],
+            'two to'   => ['to', ['anna@example.test', 'bob@example.test']],
+            'auto bcc' => ['auto_bcc', 'archive@example.test'],
+        ];
+    }
+
+    /** @dataProvider extraRecipients */
+    public function test_extra_recipients_get_the_email_without_a_link(string $field, $value)
+    {
+        list(, , $conversation) = $this->chat();
+        list(, $row1) = $this->reply($conversation, 'First');
+        list($r2, $row2) = $this->reply($conversation, 'Second');
+
+        if ($field === 'auto_bcc') {
+            $mailbox = $conversation->mailbox;
+            $mailbox->auto_bcc = $value;
+            $mailbox->save();
+        } else {
+            $thread = Thread::find($r2->id);
+            $thread->{'set'.ucfirst($field)}($value);
+            $thread->save();
+        }
+
+        Queue::fake();
+        $this->assertSame(1, DueEmails::sweep());
+        $mailer = $this->fake();
+        $this->runJob($this->pushedJob());
+
+        $this->assertCount(1, $mailer->calls);
+        $this->assertArrayHasKey('link', $mailer->calls[0]['context']);
+        $this->assertNull($mailer->calls[0]['context']['link']);
+        $this->assertSame(0, Link::where('conversation_id', $conversation->id)->count());
+        $this->assertSame(Message::EMAIL_SENT, $this->emailStatus($row1));
+        $this->assertSame(Message::EMAIL_SENT, $this->emailStatus($row2));
+    }
+
+    /** The customer and the mailbox itself in Cc or Bcc are no extra recipients: core drops them. */
+    public function test_customer_and_mailbox_in_cc_keep_the_link()
+    {
+        list($site, , $conversation) = $this->chat();
+        list($r1, $row1) = $this->reply($conversation, 'Only');
+        $thread = Thread::find($r1->id);
+        $thread->setTo(['anna@example.test']);
+        $thread->setCc(['anna@example.test', $conversation->mailbox->email]);
+        $thread->setBcc([$conversation->mailbox->email]);
+        $thread->save();
+
+        Queue::fake();
+        $this->assertSame(1, DueEmails::sweep());
+        $mailer = $this->fake();
+        $this->runJob($this->pushedJob());
+
+        $this->assertStringStartsWith(rtrim($site->url, '/').'/#lcff-continue=', $mailer->calls[0]['context']['link']);
+        $this->assertSame(1, Link::where('conversation_id', $conversation->id)->count());
+        $this->assertSame(Message::EMAIL_SENT, $this->emailStatus($row1));
+    }
+
     /** The stale check reads updated_at: the claim must stamp it. */
     public function test_claim_stamps_updated_at()
     {
