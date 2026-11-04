@@ -170,6 +170,31 @@ abstract class TestCase extends CoreTestCase
         );
     }
 
+    /**
+     * Like api(), but as a multipart form post: $fields go into the form
+     * body, $files (field name => UploadedFile) into the upload bag.
+     */
+    protected function apiMultipart(string $method, Site $site, string $path, ?string $token, array $fields, array $files = [], array $headers = []): \Illuminate\Foundation\Testing\TestResponse
+    {
+        $server = [
+            'CONTENT_TYPE' => 'multipart/form-data; boundary=----wpc-test',
+            'HTTP_ORIGIN'  => $site->origin,
+            'HTTP_ACCEPT'  => 'application/json',
+        ];
+        if ($token !== null) {
+            $server['HTTP_X_CHAT_TOKEN'] = $token;
+        }
+        foreach ($headers as $name => $value) {
+            $server['HTTP_'.strtoupper(str_replace('-', '_', $name))] = $value;
+        }
+
+        return $this->call(
+            $method,
+            '/wordpress-chat/api/v1/sites/'.$site->public_id.$path,
+            $fields, [], $files, $server
+        );
+    }
+
     /** A chat token the way the widget makes one: 32 random bytes, base64url, no padding. */
     protected function newChatToken(): string
     {

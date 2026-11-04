@@ -3,9 +3,11 @@
 namespace Modules\WordPressChat\Http\Controllers\Api;
 
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Routing\Controller;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Exceptions\MessageConflictException;
+use Modules\WordPressChat\Services\ChatAttachment;
 use Modules\WordPressChat\Services\IdentityPayload;
 use Modules\WordPressChat\Services\InboundMessage;
 use Modules\WordPressChat\Services\MessagePresenter;
@@ -26,12 +28,18 @@ class ChatController extends Controller
     const MAX_ID = 2147483647;
 
     /**
-     * POST …/messages {text, client_message_id, new_token}. Without an
-     * X-Chat-Token header the body must carry `new_token`, a token the widget
-     * generated for its first message: the session is created for it (or
+     * POST …/messages {text, client_message_id, new_token, file?}, as JSON
+     * or as a multipart form. Without an X-Chat-Token header the body must
+     * carry `new_token`, a token the widget generated for its first
+     * message: the session is created for it (or
      * found again, when this is a retry of a first message whose response
      * was lost) and the token is echoed back. With the header, new_token is
      * ignored. An optional `login_token` logs the session in first.
+     *
+     * With a `file` (multipart, one per message, Ruling E2) the text may be
+     * empty. The file is checked on its bytes (ChatAttachment::validate())
+     * before anything is written; a refused one is 422 {field: file,
+     * reason: too_large|type|missing}.
      *
      * Validation is done by hand: this route group is not in the `web`
      * group and the widget may not send Accept: application/json, so a
@@ -64,7 +72,11 @@ class ChatController extends Controller
         $text = is_string($text) ? trim(self::stripControlChars($text)) : '';
         $length = mb_strlen($text, 'UTF-8');
 
-        if ($length < 1 || $length > self::MAX_TEXT_LENGTH) {
+        // A `file` key, as an upload or anything else, means a file was
+        // meant to come: then it must be a usable one, and text is optional.
+        $hasFile = $request->has('file');
+
+        if ($length < ($hasFile ? 0 : 1) || $length > self::MAX_TEXT_LENGTH) {
             return $this->invalid('text');
         }
 
@@ -72,6 +84,17 @@ class ChatController extends Controller
 
         if (!is_string($clientMessageId) || !preg_match('/\A[A-Za-z0-9-]{8,64}\z/', $clientMessageId)) {
             return $this->invalid('client_message_id');
+        }
+
+        $file = null;
+        if ($hasFile) {
+            $file = $request->file('file');
+            $file = $file instanceof UploadedFile ? $file : null;
+            $reason = ChatAttachment::validate($file, $site);
+
+            if ($reason !== null) {
+                return response()->json(['error' => 'validation', 'field' => 'file', 'reason' => $reason], 422);
+            }
         }
 
         // Validated last of the fields: nothing is written before every
@@ -105,7 +128,7 @@ class ChatController extends Controller
         }
 
         try {
-            $message = InboundMessage::receive($site, $session, $text, $clientMessageId);
+            $message = InboundMessage::receive($site, $session, $text, $clientMessageId, $file);
         } catch (MessageConflictException $e) {
             return response()->json(['error' => 'conflict'], 409);
         }
@@ -126,8 +149,8 @@ class ChatController extends Controller
 
     /**
      * GET …/messages?after=<id>: visible messages newer than the cursor (a
-     * best-effort cursor, see Visibility), plus the identity and
-     * conversation summary from Visibility::status().
+     * best-effort cursor, see Visibility), plus the identity, conversation
+     * and limits summary from Visibility::status().
      */
     public function index(Request $request)
     {
@@ -143,7 +166,7 @@ class ChatController extends Controller
 
         $messages = Visibility::query($session)
             ->where('wordpresschat_messages.id', '>', (int) $after)
-            ->with('thread.created_by_user')
+            ->with('thread.created_by_user', 'thread.all_attachments')
             ->limit(self::MAX_POLL)
             ->get();
 
@@ -155,6 +178,7 @@ class ChatController extends Controller
             })->values()->all(),
             'identity'     => $status['identity'],
             'conversation' => $status['conversation'],
+            'limits'       => $status['limits'],
         ]);
     }
 

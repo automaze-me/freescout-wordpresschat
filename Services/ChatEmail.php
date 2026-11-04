@@ -6,7 +6,7 @@ use App\Thread;
 
 /**
  * The context of the one chat email being built in this process (Task 4's
- * job sets it around core's send) and the three core email hooks that read
+ * job sets it around core's send) and the four core email hooks that read
  * it. Static state: callers must always end() in a finally.
  */
 class ChatEmail
@@ -80,6 +80,59 @@ class ChatEmail
         }
 
         return Thread::sortThreads($threads->concat($extra))->values();
+    }
+
+    /**
+     * Ruling E10: core's mailable attaches only its last_thread's files
+     * ($thread here); the files of the batch's other replies are added to
+     * the Swift message. Read from local storage only: with remote storage
+     * (or a file gone from disk) a file is skipped with a log line, and the
+     * email still goes out.
+     */
+    public static function attachBatchFiles($swiftmessage, $thread): void
+    {
+        if (self::$current === null
+            || !$swiftmessage instanceof \Swift_Mime_SimpleMessage
+            || !$thread instanceof Thread
+            || (int) $thread->conversation_id !== (int) self::$current['conversation_id']
+        ) {
+            return;
+        }
+
+        $others = array_values(array_diff(self::$current['thread_ids'], [(int) $thread->id]));
+
+        if (!$others) {
+            return;
+        }
+
+        $threads = Thread::where('conversation_id', $thread->conversation_id)
+            ->whereIn('id', $others)
+            ->where('type', Thread::TYPE_MESSAGE)
+            ->where('state', Thread::STATE_PUBLISHED)
+            ->where('has_attachments', true)
+            ->orderBy('id')
+            ->get();
+
+        foreach ($threads as $reply) {
+            // Core's own choice for an email: the non-embedded files.
+            foreach ($reply->attachments()->orderBy('id')->get() as $attachment) {
+                if (!\Helper::isLocalStorage()) {
+                    \Log::warning('[WordPressChat] Chat email for conversation #'.$thread->conversation_id
+                        .': attachment #'.$attachment->id.' of reply #'.$reply->id.' skipped, storage is not local.');
+                    continue;
+                }
+
+                if (!$attachment->fileExists()) {
+                    \Log::error('[WordPressChat] Chat email for conversation #'.$thread->conversation_id
+                        .': attachment #'.$attachment->id.' of reply #'.$reply->id.' is missing on disk: '.$attachment->getLocalFilePath());
+                    continue;
+                }
+
+                $swiftmessage->attach(
+                    \Swift_Attachment::fromPath($attachment->getLocalFilePath())->setFilename($attachment->file_name)
+                );
+            }
+        }
     }
 
     public static function echoLink($loop, $conversation): void

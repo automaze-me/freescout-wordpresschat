@@ -2,12 +2,14 @@
 
 namespace Modules\WordPressChat\Services;
 
+use App\Attachment;
 use App\Conversation;
 use App\Customer;
 use App\Events\CustomerCreatedConversation;
 use App\Events\CustomerReplied;
 use App\Thread;
 use Illuminate\Database\QueryException;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Modules\WordPressChat\Entities\Access;
 use Modules\WordPressChat\Entities\ConversationState;
@@ -21,13 +23,17 @@ class InboundMessage
 {
     /**
      * Store a visitor's chat message as a customer thread of a Website chat
-     * conversation. $text must already be trimmed and validated.
+     * conversation. $text must already be trimmed and validated; it may be
+     * empty when a $file comes with it. $file must have passed
+     * ChatAttachment::validate().
      *
      * Idempotent per (session, client_message_id): a retry with the same
-     * text returns the stored Message (its wasRecentlyCreated is false) and
-     * fires nothing; a different text throws MessageConflictException.
+     * text returns the stored Message (its wasRecentlyCreated is false),
+     * stores no file and fires nothing; a different text throws
+     * MessageConflictException. A retry's file is ignored: the file is
+     * stored in the same transaction as the thread, so it exists once.
      */
-    public static function receive(Site $site, Session $session, string $text, string $clientMessageId): Message
+    public static function receive(Site $site, Session $session, string $text, string $clientMessageId, ?UploadedFile $file = null): Message
     {
         $body = self::bodyFor($text);
 
@@ -37,20 +43,29 @@ class InboundMessage
             return self::replay($existing, $body);
         }
 
+        // A file-only message names its conversation and preview after the
+        // file, not "(no subject)" or the first thread's text.
+        $summary = $text;
+        if ($summary === '' && $file) {
+            $summary = (string) ChatAttachment::fileName($file);
+        }
+
         $customer     = null;
         $message      = null;
         $conversation = null;
         $thread       = null;
         $isNew        = false;
+        $stored       = null;
 
         // The catch wraps the whole transaction rather than sitting inside
         // it: on PostgreSQL a failed statement aborts the transaction, so
         // nothing may run in it after the unique index fires. Here the
         // transaction is rolled back first, then the winner is re-read.
+        // Either catch also deletes a file the rolled-back flow wrote.
         try {
             DB::transaction(function () use (
-                $site, $session, $text, $body, $clientMessageId,
-                &$customer, &$message, &$conversation, &$thread, &$isNew
+                $site, $session, $summary, $body, $clientMessageId, $file,
+                &$customer, &$message, &$conversation, &$thread, &$isNew, &$stored
             ) {
                 // First statement: serialises this session's messages, so
                 // two concurrent first sends cannot both create a customer
@@ -82,7 +97,7 @@ class InboundMessage
 
                 if ($isNew) {
                     $conversation = self::createConversation(
-                        $site, $customer, $text, self::customerEmail($session, $customer, $latest)
+                        $site, $customer, $summary, self::customerEmail($session, $customer, $latest)
                     );
 
                     Access::create([
@@ -128,12 +143,19 @@ class InboundMessage
                 }
                 $thread->save();
 
+                // Written to disk here, so a rollback leaves a file behind:
+                // the catch below removes it.
+                if ($file) {
+                    $stored = ChatAttachment::store($file, $thread);
+                    $conversation->has_attachments = true;
+                }
+
                 // Core's order: last reply and preview are set before the
                 // filter runs. setPreview() gets the raw text, because the
                 // preview strips tags but never decodes entities.
                 $conversation->last_reply_at   = now();
                 $conversation->last_reply_from = Conversation::PERSON_CUSTOMER;
-                $conversation->setPreview($text);
+                $conversation->setPreview($summary);
 
                 $conversation = \Eventy::filter(
                     $isNew ? 'conversation.created_by_customer' : 'conversation.customer_replied',
@@ -164,6 +186,9 @@ class InboundMessage
                 ]);
             });
         } catch (QueryException $e) {
+            // The rollback removed the attachment row, not its file.
+            self::discardFile($stored);
+
             $raced = self::find($session, $clientMessageId);
 
             if (!$raced) {
@@ -172,11 +197,34 @@ class InboundMessage
 
             // The concurrent request stored the message and fires its events.
             return self::replay($raced, $body);
+        } catch (\Throwable $e) {
+            self::discardFile($stored);
+
+            throw $e;
         }
 
         self::fireEvents($conversation, $thread, $customer, $isNew, $message);
 
         return $message;
+    }
+
+    /**
+     * Deletes the file of an attachment whose row a rollback undid. Never
+     * throws: the caller is already handling the original failure.
+     */
+    private static function discardFile(?Attachment $attachment): void
+    {
+        if (!$attachment || !$attachment->file_dir) {
+            return;
+        }
+
+        try {
+            Attachment::getDisk()->delete($attachment->getStorageFilePath());
+        } catch (\Throwable $e) {
+            \Log::error('[WordPressChat] Could not delete the file of a rolled-back attachment: '.$attachment->getStorageFilePath(), [
+                'exception' => $e,
+            ]);
+        }
     }
 
     /**

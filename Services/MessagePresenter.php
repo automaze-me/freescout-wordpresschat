@@ -10,7 +10,9 @@ class MessagePresenter
      * The widget's view of one chat message. Only plain text leaves the
      * server; the widget renders it with textContent. `via` is the channel
      * the thread travelled by: "chat", or "email" for rows only verified
-     * browsers receive.
+     * browsers receive. `attachments` lists the thread's files, embedded
+     * ones included, by id; the browser fetches each through the download
+     * endpoint with its token (Ruling E4), so no URL is given here.
      */
     public static function present(Message $m): array
     {
@@ -27,14 +29,35 @@ class MessagePresenter
         $createdAt = $thread ? $thread->created_at : $m->created_at;
 
         return [
-            'id'         => (int) $m->id,
-            'role'       => $isAgent ? 'agent' : 'visitor',
-            'text'       => $thread ? self::text($thread->body) : '',
-            'author'     => $author,
-            'avatar'     => $avatar,
-            'created_at' => $createdAt ? $createdAt->copy()->setTimezone('UTC')->format('Y-m-d\TH:i:s\Z') : null,
-            'via'        => (int) $m->via === Message::VIA_EMAIL ? 'email' : 'chat',
+            'id'          => (int) $m->id,
+            'role'        => $isAgent ? 'agent' : 'visitor',
+            'text'        => $thread ? self::text($thread->body) : '',
+            'author'      => $author,
+            'avatar'      => $avatar,
+            'created_at'  => $createdAt ? $createdAt->copy()->setTimezone('UTC')->format('Y-m-d\TH:i:s\Z') : null,
+            'via'         => (int) $m->via === Message::VIA_EMAIL ? 'email' : 'chat',
+            'attachments' => $thread ? self::attachments($thread) : [],
         ];
+    }
+
+    /**
+     * The thread's files as {id, name, mime, size}: the name and type the
+     * download serves them with (ChatAttachment).
+     */
+    private static function attachments($thread): array
+    {
+        return $thread->all_attachments
+            ->sortBy('id')
+            ->map(function ($attachment) {
+                return [
+                    'id'   => (int) $attachment->id,
+                    'name' => ChatAttachment::displayName($attachment),
+                    'mime' => ChatAttachment::servedMime($attachment),
+                    'size' => (int) $attachment->size,
+                ];
+            })
+            ->values()
+            ->all();
     }
 
     /**

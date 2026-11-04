@@ -11,6 +11,10 @@ Route::group([
     Route::post('/wordpress-chat/api/v1/sites/{site}/messages', 'ChatController@send')->name('wordpresschat.api.send')->where('site', $site);
     Route::get('/wordpress-chat/api/v1/sites/{site}/messages', 'ChatController@index')->name('wordpresschat.api.index')->where('site', $site);
     Route::post('/wordpress-chat/api/v1/sites/{site}/seen', 'ChatController@seen')->name('wordpresschat.api.seen')->where('site', $site);
+    // X-Chat-Token only, never a query token: no attachment URL works on
+    // its own (Ruling E4). AttachmentController bounds {id} to the
+    // 4-byte integer range.
+    Route::get('/wordpress-chat/api/v1/sites/{site}/attachments/{id}', 'AttachmentController@show')->name('wordpresschat.api.attachment')->where(['site' => $site, 'id' => '[0-9]{1,10}']);
     Route::post('/wordpress-chat/api/v1/sites/{site}/identity', 'IdentityController@identify')->name('wordpresschat.api.identity')->where('site', $site);
     Route::post('/wordpress-chat/api/v1/sites/{site}/logout', 'IdentityController@logout')->name('wordpresschat.api.logout')->where('site', $site);
     // POST only: a link scanner's GET must never redeem a continue link.

@@ -8,6 +8,7 @@ use Modules\WordPressChat\Entities\Access;
 use Modules\WordPressChat\Entities\ConversationState;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Entities\Session;
+use Modules\WordPressChat\Entities\Site;
 use Modules\WordPressChat\Level;
 
 /**
@@ -173,6 +174,8 @@ class Visibility
      * {status, poll, key, notice}, or null when it sees none. Then the level
      * comes from the session alone (Ruling C5). `account` says whether the
      * browser holds a fresh account login, which the widget ends on logout.
+     * `limits` {attachment_mb} is the largest file the widget may send
+     * (ChatAttachment::effectiveLimitMb(), Ruling E3).
      */
     public static function status(Session $session): array
     {
@@ -204,6 +207,9 @@ class Visibility
                 'account' => $session->accountFresh(),
             ],
             'conversation' => $conversation,
+            'limits'       => [
+                'attachment_mb' => ChatAttachment::effectiveLimitMb($session->site ?: new Site()),
+            ],
         ];
     }
 

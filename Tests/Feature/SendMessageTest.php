@@ -121,13 +121,14 @@ class SendMessageTest extends TestCase
         $this->assertSame("Hi &amp; welcome<br />\nsecond line", $thread->body);
 
         $this->assertSame([
-            'id'         => (int) $message->id,
-            'role'       => 'visitor',
-            'text'       => "Hi & welcome\nsecond line",
-            'author'     => null,
-            'avatar'     => null,
-            'created_at' => $thread->created_at->copy()->setTimezone('UTC')->format('Y-m-d\TH:i:s\Z'),
-            'via'        => 'chat',
+            'id'          => (int) $message->id,
+            'role'        => 'visitor',
+            'text'        => "Hi & welcome\nsecond line",
+            'author'      => null,
+            'avatar'      => null,
+            'created_at'  => $thread->created_at->copy()->setTimezone('UTC')->format('Y-m-d\TH:i:s\Z'),
+            'via'         => 'chat',
+            'attachments' => [],
         ], $json['message']);
     }
 

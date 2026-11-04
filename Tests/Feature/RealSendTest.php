@@ -163,7 +163,10 @@ class RealSendTest extends TestCase
         return [$headers, $parts, $raw];
     }
 
-    /** Parses one MIME entity; leaf text parts are decoded into $parts by subtype. */
+    /**
+     * Parses one MIME entity; leaf text parts are decoded into $parts by
+     * subtype, file parts into $parts['attachments'].
+     */
     private function parsePart(string $entity, array &$parts): array
     {
         $split = strpos($entity, "\n\n");
@@ -189,6 +192,16 @@ class RealSendTest extends TestCase
                 }
                 $this->parsePart(ltrim($chunk, "\n"), $parts);
             }
+        } elseif (preg_match('/^attachment/i', $headers['content-disposition'][0] ?? '')) {
+            // A file part: its name and its decoded bytes.
+            $disposition = $headers['content-disposition'][0];
+            $name = preg_match('/filename="?([^";]+)"?/i', $disposition, $f) ? $f[1] : '';
+            $encoding = strtolower($headers['content-transfer-encoding'][0] ?? '7bit');
+            $parts['attachments'][] = [
+                'name' => $name,
+                'type' => strtolower(trim(explode(';', $type)[0])),
+                'body' => $encoding === 'base64' ? base64_decode($body) : $body,
+            ];
         } elseif (preg_match('#^text/(plain|html)#i', $type, $m)) {
             $encoding = strtolower($headers['content-transfer-encoding'][0] ?? '7bit');
             if ($encoding === 'quoted-printable') {
@@ -289,5 +302,103 @@ class RealSendTest extends TestCase
         $this->assertStringNotContainsString('lcff-continue', $parts['html']);
         $this->assertSame(0, Link::where('conversation_id', $conversation->id)->count());
         $this->assertSame(Message::EMAIL_SENT, (int) $row1->fresh()->email_status);
+    }
+
+    /** A PDF on an agent reply, as core stores one the agent attached. */
+    private function attachPdf(Thread $thread, string $name, string $marker): array
+    {
+        $bytes = "%PDF-1.4\n% ".$marker."\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+            ."2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";
+        $attachment = \App\Attachment::create($name, 'application/pdf', null, $bytes, null, false, $thread->id, $thread->created_by_user_id);
+        $thread->has_attachments = true;
+        $thread->save();
+
+        return [$attachment, $bytes];
+    }
+
+    /**
+     * Ruling E10: core attaches only its last_thread's files; the batch
+     * email carries the files of every reply in it.
+     */
+    public function test_batch_email_carries_every_replys_attachments()
+    {
+        list($site, $conversation, $mailbox) = $this->chat();
+        list($r1, $row1) = $this->reply($conversation, 'Here is the invoice.');
+        list(, $invoice) = $this->attachPdf($r1, 'invoice-1.pdf', 'first');
+        list($r2, $row2) = $this->reply($conversation, 'And the delivery note.');
+        list(, $note) = $this->attachPdf($r2, 'delivery-2.pdf', 'second');
+
+        Queue::fake();
+        $this->assertSame(1, DueEmails::sweep());
+        app()->call([Queue::pushed(SendChatEmail::class)->first(), 'handle']);
+
+        list($headers, $parts) = $this->captured();
+
+        $this->assertStringContainsString('Here is the invoice.', $parts['plain']);
+        $this->assertStringContainsString('And the delivery note.', $parts['plain']);
+        $this->assertArrayHasKey('attachments', $parts);
+        $files = [];
+        foreach ($parts['attachments'] as $file) {
+            $files[$file['name']] = $file;
+        }
+        ksort($files);
+        $this->assertSame(['delivery-2.pdf', 'invoice-1.pdf'], array_keys($files));
+        $this->assertSame($note, $files['delivery-2.pdf']['body']);
+        $this->assertSame($invoice, $files['invoice-1.pdf']['body']);
+        $this->assertSame('application/pdf', $files['invoice-1.pdf']['type']);
+        $this->assertSame(Message::EMAIL_SENT, (int) $row1->fresh()->email_status);
+        $this->assertSame(Message::EMAIL_SENT, (int) $row2->fresh()->email_status);
+    }
+
+    /** A batch reply's file that is gone from disk is skipped; the email still goes out. */
+    public function test_a_missing_batch_file_is_skipped()
+    {
+        list($site, $conversation, $mailbox) = $this->chat();
+        list($r1) = $this->reply($conversation, 'Here is the invoice.');
+        list($gone) = $this->attachPdf($r1, 'invoice-1.pdf', 'first');
+        list($r2, $row2) = $this->reply($conversation, 'And the delivery note.');
+        $this->attachPdf($r2, 'delivery-2.pdf', 'second');
+        unlink($gone->getLocalFilePath());
+
+        Queue::fake();
+        $this->assertSame(1, DueEmails::sweep());
+        app()->call([Queue::pushed(SendChatEmail::class)->first(), 'handle']);
+
+        list($headers, $parts) = $this->captured();
+
+        $this->assertSame(['delivery-2.pdf'], array_column($parts['attachments'], 'name'));
+        $this->assertSame(Message::EMAIL_SENT, (int) $row2->fresh()->email_status);
+    }
+
+    /** Outside a chat email (no ChatEmail context) the hook adds nothing. */
+    public function test_the_hook_does_nothing_outside_a_chat_email()
+    {
+        list($site, $conversation) = $this->chat();
+        list($r1) = $this->reply($conversation, 'One');
+        $this->attachPdf($r1, 'invoice-1.pdf', 'first');
+        list($r2) = $this->reply($conversation, 'Two');
+
+        $swift = new \Swift_Message('Test');
+        \Eventy::action('email.reply_to_customer.swiftmessage', $swift, '', $r2, null);
+        $this->assertCount(0, $swift->getChildren());
+
+        // Another conversation's context: nothing either.
+        \Modules\WordPressChat\Services\ChatEmail::begin((int) $conversation->id + 100000, [$r1->id, $r2->id], null);
+        try {
+            \Eventy::action('email.reply_to_customer.swiftmessage', $swift, '', $r2, null);
+        } finally {
+            \Modules\WordPressChat\Services\ChatEmail::end();
+        }
+        $this->assertCount(0, $swift->getChildren());
+
+        // The matching context attaches the other batch reply's file.
+        \Modules\WordPressChat\Services\ChatEmail::begin((int) $conversation->id, [$r1->id, $r2->id], null);
+        try {
+            \Eventy::action('email.reply_to_customer.swiftmessage', $swift, '', $r2, null);
+        } finally {
+            \Modules\WordPressChat\Services\ChatEmail::end();
+        }
+        $this->assertCount(1, $swift->getChildren());
+        $this->assertSame('invoice-1.pdf', $swift->getChildren()[0]->getFilename());
     }
 }
