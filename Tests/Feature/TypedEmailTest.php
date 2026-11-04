@@ -90,6 +90,29 @@ class TypedEmailTest extends TestCase
         $this->assertCount(1, $this->lineItems($conversation));
     }
 
+    public function test_placeholder_that_already_has_an_email_is_not_modified()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site);
+        $old = Customer::find($chat['session']->customer_id);
+        $old->addEmail('agent-added@example.test');
+        $old->first_name = 'Edited';
+        $old->save();
+
+        $this->identify($site, $chat['token'], 'typed@example.test')->assertStatus(200);
+
+        $old = $old->fresh();
+        $this->assertSame('Edited', $old->first_name);
+        $this->assertSame(['agent-added@example.test'], $old->emails()->pluck('email')->all());
+
+        $new = Customer::getByEmail('typed@example.test');
+        $this->assertNotNull($new);
+        $this->assertNotSame((int) $old->id, (int) $new->id);
+        $this->assertSame((int) $new->id, (int) $chat['conversation']->fresh()->customer_id);
+        $this->assertSame((int) $new->id, (int) $chat['session']->fresh()->customer_id);
+        $this->assertSame('typed@example.test', $chat['conversation']->fresh()->customer_email);
+    }
+
     public function test_second_identity_is_409()
     {
         $site = $this->makeSite();
@@ -106,7 +129,7 @@ class TypedEmailTest extends TestCase
         $site = $this->makeSite();
         $chat = $this->startChat($site);
 
-        foreach (['not-an-email', str_repeat('a', 190).'@example.test', 123, ['x']] as $bad) {
+        foreach (['not-an-email', str_repeat('a', 190).'@example.test', 123, ['x'], 'ü@ü', 'a@.', 'anna@müller.de', 'Anna Maier@firma.de', 'a@b@c'] as $bad) {
             $this->assertJsonResponse($this->identify($site, $chat['token'], $bad), 422, ['error' => 'validation', 'field' => 'email']);
         }
 

@@ -43,9 +43,18 @@ class IdentityController extends Controller
         $raw = $request->input('email');
         $email = null;
         if (is_string($raw) && mb_check_encoding($raw, 'UTF-8') && mb_strlen(trim($raw), 'UTF-8') <= self::MAX_EMAIL_LENGTH) {
-            $email = \App\Email::sanitizeEmail(trim($raw));
+            $clean = \App\Email::sanitizeEmail(trim($raw));
+
+            // sanitizeEmail() rewrites what it dislikes; accept only an
+            // address it left alone apart from case.
+            if ($clean
+                && $clean === mb_strtolower(trim($raw), 'UTF-8')
+                && filter_var($clean, FILTER_VALIDATE_EMAIL)
+            ) {
+                $email = $clean;
+            }
         }
-        if (!$email || mb_strlen($email, 'UTF-8') > self::MAX_EMAIL_LENGTH) {
+        if (!$email) {
             return $this->invalid('email');
         }
 

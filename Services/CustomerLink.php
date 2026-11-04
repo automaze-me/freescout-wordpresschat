@@ -17,8 +17,9 @@ class CustomerLink
 {
     /**
      * The customer for $email. An existing one is returned untouched.
-     * Otherwise the session's placeholder gets the email and, for $name !== ''
-     * (identities WordPress vouches for), the name.
+     * Otherwise the session's customer, if it has no email yet, gets the email and, for $name !== ''
+     * (identities WordPress vouches for), the name. A customer that already
+     * has an email is left alone and a new customer is created.
      */
     public static function resolve(Session $session, string $email, string $name = ''): Customer
     {
@@ -28,10 +29,22 @@ class CustomerLink
             return $existing;
         }
 
-        $placeholder = VisitorCustomer::forSession($session);
+        $current = VisitorCustomer::forSession($session);
 
-        // Returns false instead of throwing when the address is taken.
-        if ($placeholder->addEmail($email, true) === false) {
+        // Only a customer without any email is still an anonymous
+        // placeholder (Ruling P9); anyone else is never modified.
+        if (!$current->emails()->exists()) {
+            // Returns false instead of throwing when the address is taken.
+            if ($current->addEmail($email, true) !== false) {
+                if ($name !== '') {
+                    $current->first_name = $name;
+                    $current->last_name = '';
+                    $current->save();
+                }
+
+                return $current;
+            }
+
             $taken = Customer::getByEmail($email);
 
             if ($taken) {
@@ -39,13 +52,7 @@ class CustomerLink
             }
         }
 
-        if ($name !== '') {
-            $placeholder->first_name = $name;
-            $placeholder->last_name = '';
-            $placeholder->save();
-        }
-
-        return $placeholder;
+        return Customer::create($email, $name !== '' ? ['first_name' => $name] : []);
     }
 
     /**
