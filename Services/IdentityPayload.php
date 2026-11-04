@@ -70,9 +70,16 @@ class IdentityPayload
         if (!is_string($num)) {
             return null;
         }
+        // 1-32 characters, no control characters, and no ':', so the
+        // ":number" and ":name" placeholders of the line item stay safe.
+        // WordPress sends the visitor's own input for an order it could not
+        // resolve, cleaned the same way.
         $num = trim($num);
         $length = mb_strlen($num, 'UTF-8');
-        if ($length < 1 || $length > self::MAX_NUMBER_LENGTH || preg_match('/[\x00-\x1F\x7F]/', $num)) {
+        if ($length < 1 || $length > self::MAX_NUMBER_LENGTH
+            || preg_match('/[\x00-\x1F\x7F]/', $num)
+            || strpos($num, ':') !== false
+        ) {
             return null;
         }
 

@@ -96,6 +96,33 @@ class OrderIdentityTest extends TestCase
         $this->assertSame(Session::IDENTITY_ORDER, (int) $chat['session']->fresh()->identity);
     }
 
+    /**
+     * Final review I3: WordPress seals an answer that is no well-formed
+     * order number as not found, with the visitor's own input as `num`.
+     * The agent sees it; the identity stays as it is.
+     */
+    public function test_free_text_order_answer_reaches_the_agent()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site);
+        $customers = Customer::count();
+
+        $response = $this->order($site, $chat['token'], $this->orderToken($site, $chat['token'], [
+            'num' => 'Order 12345', 'found' => false, 'email' => null, 'name' => null,
+        ]));
+        $response->assertStatus(200);
+        $this->assertSame(['level' => 'anonymous', 'account' => false], $response->json()['identity']);
+
+        $this->assertSame(['Order number Order 12345 not found'], $this->lineItems($chat['conversation']));
+
+        $session = $chat['session']->fresh();
+        $this->assertSame(Session::IDENTITY_NONE, (int) $session->identity);
+        $this->assertNull($session->email);
+        $this->assertSame('', Customer::find($session->customer_id)->getMainEmail());
+        $this->assertSame($customers, Customer::count());
+        $this->assertSame('', (string) $chat['conversation']->fresh()->customer_email);
+    }
+
     public function test_order_token_replay_is_403()
     {
         $site = $this->makeSite();
@@ -137,6 +164,8 @@ class OrderIdentityTest extends TestCase
             ['num' => str_repeat('1', 33)],
             ['num' => 10482],
             ['num' => "104\u{0000}82"],
+            ['num' => '10:482'],
+            ['num' => ':name', 'found' => false, 'email' => null, 'name' => null],
             ['found' => 'yes'],
             ['found' => 1],
             ['email' => 'not-an-email'],
