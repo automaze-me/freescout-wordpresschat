@@ -32,6 +32,7 @@ class SitesController extends Controller
 
         return view('wordpresschat::sites.form', [
             'site'      => new Site(['fallback_delay' => 120, 'max_attachment_mb' => 10]),
+            'secret'    => null,
             'mailboxes' => Mailbox::orderBy('name')->get(),
         ]);
     }
@@ -56,8 +57,13 @@ class SitesController extends Controller
     {
         $this->authorizeAdmin();
 
+        $site = $this->findSite($id);
+
+        // Null when the secret can't be decrypted (e.g. after an APP_KEY
+        // change): the form then asks to regenerate it instead of a 500.
         return view('wordpresschat::sites.form', [
-            'site'      => $this->findSite($id),
+            'site'      => $site,
+            'secret'    => $site->secretOrNull(),
             'mailboxes' => Mailbox::orderBy('name')->get(),
         ]);
     }

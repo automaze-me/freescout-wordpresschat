@@ -5,6 +5,7 @@ namespace Modules\WordPressChat\Tests;
 use App\Attachment;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Modules\WordPressChat\Entities\Site;
+use Modules\WordPressChat\Services\IdentityToken;
 use Tests\TestCase as CoreTestCase;
 
 abstract class TestCase extends CoreTestCase
@@ -173,6 +174,52 @@ abstract class TestCase extends CoreTestCase
     protected function newChatToken(): string
     {
         return rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+    }
+
+    /**
+     * A login identity token as the WordPress plugin seals it for a visitor
+     * holding $chatToken: valid now, random jti. $over replaces any key.
+     */
+    protected function loginToken(Site $site, string $chatToken, array $over = []): string
+    {
+        // One clock read: two could straddle a second and make exp - iat 301.
+        $now = time();
+
+        return IdentityToken::seal(array_merge([
+            'typ'   => 'login',
+            'sid'   => $site->public_id,
+            'bind'  => hash('sha256', $chatToken),
+            'iat'   => $now,
+            'exp'   => $now + IdentityToken::MAX_AGE,
+            'jti'   => bin2hex(random_bytes(16)),
+            'uid'   => 42,
+            'email' => 'anna@example.test',
+            'name'  => 'Anna Example',
+        ], $over), $site->getSecret(), $site->public_id);
+    }
+
+    /**
+     * An order identity token as the WordPress plugin seals it for a visitor
+     * holding $chatToken: valid now, random jti, order found. $over replaces
+     * any key.
+     */
+    protected function orderToken(Site $site, string $chatToken, array $over = []): string
+    {
+        // One clock read: two could straddle a second and make exp - iat 301.
+        $now = time();
+
+        return IdentityToken::seal(array_merge([
+            'typ'   => 'order',
+            'sid'   => $site->public_id,
+            'bind'  => hash('sha256', $chatToken),
+            'iat'   => $now,
+            'exp'   => $now + IdentityToken::MAX_AGE,
+            'jti'   => bin2hex(random_bytes(16)),
+            'num'   => '10482',
+            'found' => true,
+            'email' => 'anna@example.test',
+            'name'  => 'Anna Example',
+        ], $over), $site->getSecret(), $site->public_id);
     }
 
     /**

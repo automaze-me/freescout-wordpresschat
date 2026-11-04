@@ -88,12 +88,16 @@
                 <div class="form-group">
                     <label class="col-sm-2 control-label">{{ __('Secret') }}</label>
                     <div class="col-sm-6">
+                        @if ($secret !== null)
                         <div class="input-group">
-                            <input type="text" class="form-control" id="wpc-secret" value="{{ $site->getSecret() }}" readonly>
+                            <input type="text" class="form-control" id="wpc-secret" value="{{ $secret }}" readonly>
                             <span class="input-group-btn">
                                 <button type="button" class="btn btn-default wpc-copy" data-target="wpc-secret">{{ __('Copy') }}</button>
                             </span>
                         </div>
+                        @else
+                        <p class="form-control-static text-danger">{{ __("The secret can't be read (the FreeScout app key changed?). Regenerate it and update the WordPress plugin.") }}</p>
+                        @endif
                     </div>
                 </div>
 
