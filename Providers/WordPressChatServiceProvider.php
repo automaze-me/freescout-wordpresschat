@@ -61,6 +61,19 @@ class WordPressChatServiceProvider extends ServiceProvider
 
     protected function hooks()
     {
+        // Chat emails (Plan 3): every due reply, and the continue link.
+        \Eventy::addFilter('email.reply_to_customer.threads', function ($threads, $conversation = null, $mailbox = null) {
+            return \Modules\WordPressChat\Services\ChatEmail::threads($threads, $conversation);
+        }, 20, 3);
+
+        \Eventy::addAction('reply_email.before_signature', function ($thread, $loop, $threads, $conversation = null) {
+            \Modules\WordPressChat\Services\ChatEmail::echoLink($loop, $conversation);
+        }, 20, 6);
+
+        \Eventy::addFilter('email.reply_to_customer.template_name_text', function ($name) {
+            return \Modules\WordPressChat\Services\ChatEmail::textTemplate($name);
+        }, 20, 1);
+
         // Manage -> Website Chat (admins only).
         \Eventy::addAction('menu.manage.append', function () {
             if (auth()->user() && auth()->user()->isAdmin()) {

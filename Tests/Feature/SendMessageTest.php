@@ -157,6 +157,20 @@ class SendMessageTest extends TestCase
         $this->assertSame($text, $response->json()['message']['text']);
     }
 
+    public function test_apostrophes_are_stored_literally_and_html_stays_escaped()
+    {
+        $site = $this->makeSite();
+        $data = ['text' => '<b>I\'m</b> "x"', 'client_message_id' => 'apos-0001', 'new_token' => $this->newChatToken()];
+
+        $response = $this->send($site, $data);
+
+        $response->assertStatus(201);
+        $thread = Thread::find($this->messageFrom($response)->thread_id);
+        $this->assertSame('&lt;b&gt;I\'m&lt;/b&gt; &quot;x&quot;', $thread->body);
+
+        $this->send($site, $data, $response->json()['token'])->assertStatus(200);
+    }
+
     public function test_text_over_5000_chars_is_422()
     {
         $site = $this->makeSite();

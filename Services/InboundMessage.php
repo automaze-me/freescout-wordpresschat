@@ -29,7 +29,7 @@ class InboundMessage
      */
     public static function receive(Site $site, Session $session, string $text, string $clientMessageId): Message
     {
-        $body = nl2br(e($text, true));
+        $body = self::bodyFor($text);
 
         $existing = self::find($session, $clientMessageId);
 
@@ -177,6 +177,16 @@ class InboundMessage
         self::fireEvents($conversation, $thread, $customer, $isNew, $message);
 
         return $message;
+    }
+
+    /**
+     * The stored form of a visitor's text: escaped HTML with a literal
+     * apostrophe, because core's plain-text email part drops "&#039;"
+     * (upstream #5793, Ruling D13).
+     */
+    public static function bodyFor(string $text): string
+    {
+        return nl2br(str_replace('&#039;', "'", e($text, true)));
     }
 
     private static function find(Session $session, string $clientMessageId)
