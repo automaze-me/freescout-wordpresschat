@@ -22,6 +22,12 @@ class DueEmails
     const WINDOW_DAYS = 7;
 
     /**
+     * Seconds after which a batch still in "sending" belongs to a dead
+     * worker. Far above the job's 120 s timeout, so no live job is cut.
+     */
+    const STALE_SENDING = 600;
+
+    /**
      * Where the conversation's email goes: its customer_email when that is
      * a valid address, otherwise the customer's main email when that is,
      * otherwise null.
@@ -71,6 +77,8 @@ class DueEmails
     public static function sweep(?Carbon $now = null): int
     {
         $now = $now ? $now->copy() : now();
+
+        self::resolveStale($now);
 
         // Rows whose thread is gone or no longer published could never be
         // sent; without the join the job would drop them and the next
@@ -152,5 +160,72 @@ class DueEmails
         }
 
         return $dispatched;
+    }
+
+    /**
+     * Batches a dead worker left in "sending" (the job's timeout, an
+     * out-of-memory fatal in core's IMAP copy, a restart). Core's send
+     * status on the batch's newest thread, its last_thread, tells whether
+     * the email went out: then the rows are sent; otherwise the batch
+     * fails with one red line item. Never queued again: a kill after the
+     * transport handoff would send the email twice.
+     *
+     * The claim stamps updated_at (Eloquent's update() does). A batch is
+     * handled once every row of it is stale: a "seen" stamps a row too,
+     * and handling part of a batch would give it two line items.
+     *
+     * Returns the number of batches resolved.
+     */
+    public static function resolveStale(?Carbon $now = null): int
+    {
+        $cutoff = ($now ? $now->copy() : now())->subSeconds(self::STALE_SENDING);
+
+        $keys = Message::where('email_status', Message::EMAIL_SENDING)
+            ->whereNotNull('email_thread_id')
+            ->where('updated_at', '<', $cutoff)
+            ->distinct()
+            ->pluck('email_thread_id')
+            ->all();
+
+        $resolved = 0;
+
+        foreach ($keys as $key) {
+            $rows = Message::where('email_thread_id', $key)
+                ->where('email_status', Message::EMAIL_SENDING)
+                ->get(['id', 'conversation_id', 'updated_at']);
+
+            $recent = $rows->contains(function ($row) use ($cutoff) {
+                return $row->updated_at && $row->updated_at->gte($cutoff);
+            });
+
+            if ($rows->isEmpty() || $recent) {
+                continue;
+            }
+
+            $ids = array_map('intval', $rows->pluck('id')->all());
+            $newest = SendChatEmail::newestThread(SendChatEmail::threadIdsOf($ids));
+
+            if ($newest && SendChatEmail::accepted($newest)) {
+                if (SendChatEmail::markSent($ids)) {
+                    $resolved++;
+                }
+
+                continue;
+            }
+
+            $conversation = $newest ? Conversation::find($newest->conversation_id) : null;
+
+            if (SendChatEmail::failBatch(
+                $ids,
+                Message::EMAIL_SENDING,
+                $conversation,
+                (int) $rows->first()->conversation_id,
+                __('sending was interrupted')
+            )) {
+                $resolved++;
+            }
+        }
+
+        return $resolved;
     }
 }

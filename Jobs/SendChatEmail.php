@@ -38,6 +38,12 @@ use Modules\WordPressChat\Services\FailureLineItem;
  * fails. A retry after core already handed the email to the transport
  * sends nothing: core returns early for a thread whose send_status says
  * accepted, and CoreReplyMailer reads that as sent.
+ *
+ * A dead worker: rows still queued are failed by failed(); rows left in
+ * "sending" are resolved by DueEmails::resolveStale() from core's send
+ * status, never sent again. The batch-outcome helpers below are shared
+ * with both, so every path moves rows with the same conditional update
+ * and a batch gets at most one red line item.
  */
 class SendChatEmail implements ShouldQueue
 {
@@ -88,10 +94,8 @@ class SendChatEmail implements ShouldQueue
                 ->whereNull('published_at')
                 ->update(['published_at' => now()]);
 
-            $threadIds = array_map('intval', Message::whereIn('id', $ids)->pluck('thread_id')->all());
-            sort($threadIds);
-
-            $newest = Thread::getLastThread(Thread::whereIn('id', $threadIds)->get());
+            $threadIds = self::threadIdsOf($ids);
+            $newest = self::newestThread($threadIds);
             $conversation = $newest ? Conversation::find($newest->conversation_id) : null;
 
             $reason = $conversation
@@ -105,7 +109,7 @@ class SendChatEmail implements ShouldQueue
                 \Log::error('[WordPressChat] Fallback email for conversation #'.$this->conversationId.' was accepted, then core threw', [
                     'exception' => $e,
                 ]);
-                $this->markSent($ids);
+                self::markSent($ids);
 
                 return;
             }
@@ -116,16 +120,75 @@ class SendChatEmail implements ShouldQueue
         }
 
         if ($reason === null) {
-            $this->markSent($ids);
+            self::markSent($ids);
 
             return;
         }
 
-        $this->failBatch($ids, $conversation, $reason);
+        self::failBatch($ids, Message::EMAIL_SENDING, $conversation, $this->conversationId, $reason);
+    }
+
+    /**
+     * Laravel calls this once the worker gives up on the job: its tries
+     * used up (a throw before the claim, a timeout) or a manual fail().
+     * $e is an Exception, or null. No type hint: PHP 7.1, and Laravel 5.5
+     * passes no Throwable for every path.
+     *
+     * Rows still queued would never be sent by anyone: they fail, with one
+     * red line item, after dropping those that need no email. Rows in
+     * "sending" are left to DueEmails::resolveStale(), which can tell from
+     * core's send status whether the email went out.
+     */
+    public function failed($e = null): void
+    {
+        $this->drop();
+
+        $ids = array_map('intval', Message::where('email_thread_id', $this->threadId)
+            ->where('email_status', Message::EMAIL_QUEUED)
+            ->pluck('id')
+            ->all());
+
+        if (!$ids) {
+            return;
+        }
+
+        $newest = self::newestThread(self::threadIdsOf($ids));
+        $conversation = $newest ? Conversation::find($newest->conversation_id) : null;
+        $message = $e instanceof \Throwable ? trim($e->getMessage()) : '';
+
+        self::failBatch(
+            $ids,
+            Message::EMAIL_QUEUED,
+            $conversation,
+            $this->conversationId,
+            $message !== '' ? $message : __('sending failed')
+        );
+    }
+
+    /** The thread ids of the rows $ids, ascending. */
+    public static function threadIdsOf(array $ids): array
+    {
+        $threadIds = array_map('intval', Message::whereIn('id', $ids)->pluck('thread_id')->all());
+        sort($threadIds);
+
+        return $threadIds;
+    }
+
+    /**
+     * The batch's newest thread, as core picks its last_thread (created_at,
+     * then id, descending). Null when none of the threads exists.
+     */
+    public static function newestThread(array $threadIds): ?Thread
+    {
+        if (!$threadIds) {
+            return null;
+        }
+
+        return Thread::getLastThread(Thread::whereIn('id', $threadIds)->get());
     }
 
     /** Whether core recorded the email of $newest (its last_thread) as accepted. */
-    private static function accepted(Thread $newest): bool
+    public static function accepted(Thread $newest): bool
     {
         $thread = Thread::find($newest->id);
 
@@ -133,9 +196,10 @@ class SendChatEmail implements ShouldQueue
             && ($thread->send_status == SendLog::STATUS_ACCEPTED || $thread->isSendStatusSuccess());
     }
 
-    private function markSent(array $ids): void
+    /** sending -> sent. Returns the number of rows moved. */
+    public static function markSent(array $ids): int
     {
-        Message::whereIn('id', $ids)
+        return Message::whereIn('id', $ids)
             ->where('email_status', Message::EMAIL_SENDING)
             ->update(['email_status' => Message::EMAIL_SENT]);
     }
@@ -277,31 +341,39 @@ class SendChatEmail implements ShouldQueue
         ]);
 
         $message = trim($e->getMessage());
-        $this->failBatch($ids, $conversation, $message !== '' ? $message : get_class($e));
+        self::failBatch(
+            $ids,
+            Message::EMAIL_SENDING,
+            $conversation,
+            $this->conversationId,
+            $message !== '' ? $message : get_class($e)
+        );
     }
 
     /**
-     * sending -> failed, and one red line item from whichever job moved
-     * the rows.
+     * $from -> failed, and one red line item from whichever caller moved
+     * the rows (this job, its failed() hook, or the stale check), so a
+     * batch never gets two. $conversationId is the fallback when the
+     * batch's conversation is not known. Returns the number of rows moved.
      */
-    private function failBatch(array $ids, ?Conversation $conversation, string $reason): void
+    public static function failBatch(array $ids, int $from, ?Conversation $conversation, int $conversationId, string $reason): int
     {
         $changed = Message::whereIn('id', $ids)
-            ->where('email_status', Message::EMAIL_SENDING)
+            ->where('email_status', $from)
             ->update(['email_status' => Message::EMAIL_FAILED]);
 
         if (!$changed) {
-            return;
+            return 0;
         }
 
-        $conversation = $conversation ?: Conversation::find($this->conversationId);
+        $conversation = $conversation ?: Conversation::find($conversationId);
 
-        if (!$conversation) {
-            return;
+        if ($conversation) {
+            FailureLineItem::create($conversation, __('Email to the visitor failed: :reason', [
+                'reason' => mb_substr($reason, 0, self::REASON_LENGTH),
+            ]));
         }
 
-        FailureLineItem::create($conversation, __('Email to the visitor failed: :reason', [
-            'reason' => mb_substr($reason, 0, self::REASON_LENGTH),
-        ]));
+        return $changed;
     }
 }

@@ -153,6 +153,26 @@ class FallbackEmailTest extends TestCase
         }, $rows))->update(['email_status' => Message::EMAIL_QUEUED, 'email_thread_id' => $threadId]);
     }
 
+    /** Rows of one batch left in "sending", last touched $secondsAgo. */
+    private function sending(array $rows, int $threadId, int $secondsAgo): void
+    {
+        Message::whereIn('id', array_map(function ($row) {
+            return $row->id;
+        }, $rows))->update([
+            'email_status'    => Message::EMAIL_SENDING,
+            'email_thread_id' => $threadId,
+            'updated_at'      => now()->subSeconds($secondsAgo),
+        ]);
+    }
+
+    private function close(Conversation $conversation): void
+    {
+        $conversation = Conversation::find($conversation->id);
+        $conversation->status = Conversation::STATUS_CLOSED;
+        $conversation->closed_at = now();
+        $conversation->save();
+    }
+
     public function test_due_reply_is_queued_once()
     {
         list(, , $conversation) = $this->chat();
@@ -519,18 +539,163 @@ class FallbackEmailTest extends TestCase
         $this->assertSame(0, Link::where('conversation_id', $conversation->id)->count());
     }
 
+    /** The stale check reads updated_at: the claim must stamp it. */
+    public function test_claim_stamps_updated_at()
+    {
+        list(, , $conversation) = $this->chat();
+        list(, $row) = $this->reply($conversation);
+        Queue::fake();
+
+        $this->assertSame(1, DueEmails::sweep());
+        Message::where('id', $row->id)->update(['updated_at' => now()->subHour()]);
+        $before = now()->subSeconds(5);
+        $stamped = null;
+        $this->fake(null, function () use ($row, &$stamped) {
+            $stamped = Message::find($row->id)->updated_at;
+        });
+        $this->runJob($this->pushedJob());
+
+        $this->assertNotNull($stamped);
+        $this->assertGreaterThanOrEqual($before->timestamp, $stamped->timestamp);
+    }
+
+    public function test_stale_sending_batch_with_accepted_mail_becomes_sent()
+    {
+        list(, , $conversation) = $this->chat();
+        list(, $row1) = $this->reply($conversation, 'First');
+        list($r2, $row2) = $this->reply($conversation, 'Second');
+        $this->sending([$row1, $row2], (int) $r2->id, DueEmails::STALE_SENDING + 1);
+        Thread::where('id', $r2->id)->update(['send_status' => SendLog::STATUS_ACCEPTED]);
+        Queue::fake();
+
+        $this->assertSame(0, DueEmails::sweep());
+
+        $this->assertSame(Message::EMAIL_SENT, $this->emailStatus($row1));
+        $this->assertSame(Message::EMAIL_SENT, $this->emailStatus($row2));
+        $this->assertCount(0, $this->failureItems($conversation));
+        Queue::assertNotPushed(SendChatEmail::class);
+    }
+
+    public function test_stale_sending_batch_without_accepted_mail_fails_once()
+    {
+        list(, , $conversation) = $this->chat();
+        list(, $row1) = $this->reply($conversation, 'First');
+        list($r2, $row2) = $this->reply($conversation, 'Second');
+        $this->close($conversation);
+        $this->sending([$row1, $row2], (int) $r2->id, DueEmails::STALE_SENDING + 1);
+        Queue::fake();
+
+        $this->assertSame(0, DueEmails::sweep());
+        $this->assertSame(0, DueEmails::sweep());
+
+        $this->assertSame(Message::EMAIL_FAILED, $this->emailStatus($row1));
+        $this->assertSame(Message::EMAIL_FAILED, $this->emailStatus($row2));
+        $items = $this->failureItems($conversation);
+        $this->assertCount(1, $items);
+        $this->assertSame('Email to the visitor failed: sending was interrupted', $items[0]->getActionText('', false));
+        $this->assertSame(Conversation::STATUS_ACTIVE, (int) Conversation::find($conversation->id)->status);
+        Queue::assertNotPushed(SendChatEmail::class);
+    }
+
+    public function test_recent_sending_batch_is_left_alone()
+    {
+        list(, , $conversation) = $this->chat();
+        list($thread, $row) = $this->reply($conversation);
+        $this->sending([$row], (int) $thread->id, DueEmails::STALE_SENDING - 60);
+        Queue::fake();
+
+        $this->assertSame(0, DueEmails::sweep());
+
+        $this->assertSame(Message::EMAIL_SENDING, $this->emailStatus($row));
+        $this->assertCount(0, $this->failureItems($conversation));
+        Queue::assertNotPushed(SendChatEmail::class);
+    }
+
+    /** A batch is resolved only once every row of it is stale (a "seen" stamps updated_at too). */
+    public function test_partly_recent_sending_batch_waits()
+    {
+        list(, , $conversation) = $this->chat();
+        list(, $row1) = $this->reply($conversation, 'First');
+        list($r2, $row2) = $this->reply($conversation, 'Second');
+        $this->sending([$row1, $row2], (int) $r2->id, DueEmails::STALE_SENDING + 1);
+        Message::where('id', $row2->id)->update(['seen_at' => now()]);
+        Queue::fake();
+
+        DueEmails::sweep();
+
+        $this->assertSame(Message::EMAIL_SENDING, $this->emailStatus($row1));
+        $this->assertSame(Message::EMAIL_SENDING, $this->emailStatus($row2));
+        $this->assertCount(0, $this->failureItems($conversation));
+    }
+
+    public function test_failed_hook_fails_a_queued_batch_once()
+    {
+        list(, , $conversation) = $this->chat();
+        list(, $row1) = $this->reply($conversation, 'First');
+        list($r2, $row2) = $this->reply($conversation, 'Second');
+        $this->close($conversation);
+        $this->queue([$row1, $row2], (int) $r2->id);
+        Queue::fake();
+
+        $job = new SendChatEmail((int) $conversation->id, (int) $r2->id);
+        $job->failed(new \Exception('Worker gave up'));
+        $job->failed(new \Exception('Worker gave up'));
+
+        $this->assertSame(Message::EMAIL_FAILED, $this->emailStatus($row1));
+        $this->assertSame(Message::EMAIL_FAILED, $this->emailStatus($row2));
+        $items = $this->failureItems($conversation);
+        $this->assertCount(1, $items);
+        $this->assertSame('Email to the visitor failed: Worker gave up', $items[0]->getActionText('', false));
+        $this->assertSame(Conversation::STATUS_ACTIVE, (int) Conversation::find($conversation->id)->status);
+    }
+
+    public function test_failed_hook_without_a_message_says_sending_failed()
+    {
+        list(, , $conversation) = $this->chat();
+        list($thread, $row) = $this->reply($conversation);
+        $this->queue([$row], (int) $thread->id);
+        Queue::fake();
+
+        (new SendChatEmail((int) $conversation->id, (int) $thread->id))->failed(null);
+
+        $this->assertSame(Message::EMAIL_FAILED, $this->emailStatus($row));
+        $items = $this->failureItems($conversation);
+        $this->assertCount(1, $items);
+        $this->assertSame('Email to the visitor failed: sending failed', $items[0]->getActionText('', false));
+    }
+
+    /** Sending rows are the stale check's: only core's send status can tell whether they went out. */
+    public function test_failed_hook_leaves_a_sending_batch_alone()
+    {
+        list(, , $conversation) = $this->chat();
+        list($thread, $row) = $this->reply($conversation);
+        $this->sending([$row], (int) $thread->id, 30);
+        Queue::fake();
+
+        (new SendChatEmail((int) $conversation->id, (int) $thread->id))->failed(new \Exception('Timed out'));
+
+        $this->assertSame(Message::EMAIL_SENDING, $this->emailStatus($row));
+        $this->assertCount(0, $this->failureItems($conversation));
+    }
+
     public function test_command_is_scheduled()
     {
         $this->assertArrayHasKey('wordpresschat:send-due-emails', \Artisan::all());
 
-        $schedule = \Eventy::filter('schedule', app(Schedule::class));
+        // A fresh schedule: the container's was already filtered once when
+        // the console kernel booted in this process.
+        $schedule = \Eventy::filter('schedule', new Schedule());
 
-        $commands = array_map(function ($event) {
-            return (string) $event->command;
-        }, $schedule->events());
+        $events = array_values(array_filter($schedule->events(), function ($event) {
+            return substr((string) $event->command, -strlen('wordpresschat:send-due-emails')) === 'wordpresschat:send-due-emails';
+        }));
 
-        $this->assertNotEmpty(array_filter($commands, function ($command) {
-            return substr($command, -strlen('wordpresschat:send-due-emails')) === 'wordpresschat:send-due-emails';
-        }), implode("\n", $commands));
+        $this->assertCount(1, $events);
+        // Every minute. Laravel 5.5's expressions have six fields (the
+        // sixth is the year), so everyMinute() gives six stars.
+        $this->assertSame('* * * * * *', $events[0]->expression);
+        $this->assertTrue($events[0]->withoutOverlapping);
+        // A sweep killed mid-run must not stop fallback emails for a day.
+        $this->assertSame(5, $events[0]->expiresAt);
     }
 }

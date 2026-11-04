@@ -68,11 +68,13 @@ class WordPressChatServiceProvider extends ServiceProvider
     protected function hooks()
     {
         // The fallback timer (Ruling D1). Core applies this filter to its
-        // scheduler, which FreeScout's per-minute cron runs.
+        // scheduler, which FreeScout's per-minute cron runs. The overlap
+        // mutex expires after 5 minutes (Laravel's default is a day): a
+        // sweep killed mid-run must not stop fallback emails until then.
         \Eventy::addFilter('schedule', function ($schedule) {
             $schedule->command('wordpresschat:send-due-emails')
                 ->everyMinute()
-                ->withoutOverlapping();
+                ->withoutOverlapping(5);
 
             return $schedule;
         });
