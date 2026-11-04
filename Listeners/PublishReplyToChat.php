@@ -1,0 +1,79 @@
+<?php
+
+namespace Modules\WordPressChat\Listeners;
+
+use App\Conversation;
+use App\Thread;
+use Modules\WordPressChat\Entities\Message;
+use Modules\WordPressChat\WordPressChat;
+
+/**
+ * Hooks core's `chat_conversation.send_reply` action: for chat-type
+ * conversations core never emails agent replies; after the undo window it
+ * fires this action instead. Recording the reply as published is what lets
+ * the widget's poll show it to the visitor.
+ *
+ * $replies is the WHOLE published history (customer + agent threads, newest
+ * first), not "the replies to send". Only first() is the triggering reply, so
+ * this never iterates it, or old replies would be replayed.
+ *
+ * The upsert is keyed by thread_id and only ever runs for TYPE_MESSAGE
+ * (agent) threads, so it can never touch a visitor's DIRECTION_IN row.
+ */
+class PublishReplyToChat
+{
+    public function handle($conversation, $replies, $customer)
+    {
+        try {
+            if (!$conversation instanceof Conversation
+                || (int) $conversation->channel !== WordPressChat::CHANNEL) {
+                return;
+            }
+
+            $first = $replies->first();
+
+            if (!$first || empty($first->id)) {
+                return;
+            }
+
+            // $first is a snapshot from before the undo window; re-read it.
+            $fresh = Thread::find($first->id);
+
+            if (!$fresh
+                || (int) $fresh->type !== Thread::TYPE_MESSAGE
+                || (int) $fresh->state !== Thread::STATE_PUBLISHED) {
+                return;
+            }
+
+            // The conversation may have been merged meanwhile: use the
+            // thread's current conversation, not the snapshot.
+            $current = Conversation::find($fresh->conversation_id);
+
+            if (!$current || (int) $current->channel !== WordPressChat::CHANNEL) {
+                return;
+            }
+
+            $message = Message::where('thread_id', $fresh->id)->first();
+
+            if (!$message) {
+                $message = new Message();
+                $message->thread_id = $fresh->id;
+            }
+
+            $message->conversation_id = $current->id;
+            $message->direction = Message::DIRECTION_OUT;
+            $message->session_id = null;
+
+            if (!$message->published_at) {
+                $message->published_at = now();
+            }
+
+            $message->save();
+        } catch (\Throwable $e) {
+            \Log::error('[WordPressChat] PublishReplyToChat: listener failed', [
+                'conversation_id' => is_object($conversation) ? ($conversation->id ?? null) : null,
+                'error'           => $e->getMessage(),
+            ]);
+        }
+    }
+}

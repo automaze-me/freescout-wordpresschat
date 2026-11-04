@@ -3,6 +3,7 @@
 namespace Modules\WordPressChat\Providers;
 
 use Illuminate\Support\ServiceProvider;
+use Modules\WordPressChat\Listeners\PublishReplyToChat;
 use Modules\WordPressChat\WordPressChat;
 
 class WordPressChatServiceProvider extends ServiceProvider
@@ -79,5 +80,9 @@ class WordPressChatServiceProvider extends ServiceProvider
 
             return $name;
         }, 20, 2);
+
+        // After core's undo window, mark the newest agent reply as published
+        // so the widget's poll may show it.
+        \Eventy::addAction('chat_conversation.send_reply', [new PublishReplyToChat(), 'handle'], 20, 3);
     }
 }
