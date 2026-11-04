@@ -107,7 +107,7 @@ class CustomerEmailTest extends TestCase
     /**
      * Final review I4: core files bounces and auto-replies as customer
      * threads and fires `conversation.customer_replied` for them. Neither is
-     * the customer writing: no row, no cut-off, no line item.
+     * the customer writing: no row, no cut-off; a bounce gets a red line item.
      */
     public function test_bounces_and_auto_replies_never_cut_off()
     {
@@ -129,7 +129,8 @@ class CustomerEmailTest extends TestCase
 
         $this->assertSame(0, Message::whereIn('thread_id', [$bounce->id, $auto->id])->count());
         $this->assertNull(ConversationState::of($conversation)->cutoff_message_id);
-        $this->assertCount(0, $this->lineItems($conversation));
+        // Only the bounce gets a (red failure) line item, Plan 3 Ruling D9.
+        $this->assertCount(1, $this->lineItems($conversation));
 
         $json = $this->poll($site, $chat['token']);
         $this->assertNull($json['conversation']['notice']);
@@ -139,7 +140,7 @@ class CustomerEmailTest extends TestCase
         $this->fire($conversation, $real);
         $row = Message::where('thread_id', $real->id)->firstOrFail();
         $this->assertSame((int) $row->id, (int) ConversationState::of($conversation)->cutoff_message_id);
-        $this->assertCount(1, $this->lineItems($conversation));
+        $this->assertCount(2, $this->lineItems($conversation));
     }
 
     public function test_chat_messages_never_cut_off()

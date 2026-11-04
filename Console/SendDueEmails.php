@@ -18,5 +18,6 @@ class SendDueEmails extends Command
     public function handle()
     {
         $this->line('Batches queued: '.DueEmails::sweep());
+        $this->line('Replies marked lost: '.DueEmails::markLost());
     }
 }

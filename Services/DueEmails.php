@@ -6,7 +6,10 @@ use App\Conversation;
 use App\Thread;
 use Carbon\Carbon;
 use Illuminate\Contracts\Bus\Dispatcher;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Modules\WordPressChat\Entities\Message;
+use Modules\WordPressChat\WordPressChat;
 use Modules\WordPressChat\Jobs\SendChatEmail;
 
 /**
@@ -20,6 +23,9 @@ class DueEmails
 {
     /** Due rows older than this are ignored. */
     const WINDOW_DAYS = 7;
+
+    /** Seconds after a reply's creation before a missing row means it is lost (Ruling D8). */
+    const LOST_GRACE = 3600;
 
     /**
      * Seconds after which a batch still in "sending" belongs to a dead
@@ -227,5 +233,74 @@ class DueEmails
         }
 
         return $resolved;
+    }
+
+    /**
+     * Ruling D8: a published agent reply in a website-chat conversation that
+     * still has no row an hour after it was written never reached the chat
+     * (module inactive, listener failed). It gets a lost row, which is never
+     * published, and one red line item. Replies core emailed (send_status
+     * set) and imported ones are not lost.
+     *
+     * thread_id is unique: a concurrent run's insert loses with a unique
+     * violation, caught here outside any transaction (PostgreSQL aborts one
+     * on a failed statement); only the run that inserted writes the item.
+     *
+     * Returns the number of replies marked. $now is for tests only.
+     */
+    public static function markLost(?Carbon $now = null): int
+    {
+        $now = $now ? $now->copy() : now();
+
+        $threads = Thread::query()
+            ->join('conversations', 'conversations.id', '=', 'threads.conversation_id')
+            ->where('conversations.channel', WordPressChat::CHANNEL)
+            ->where('threads.type', Thread::TYPE_MESSAGE)
+            ->where('threads.state', Thread::STATE_PUBLISHED)
+            ->where(function ($q) {
+                $q->where('threads.imported', false)->orWhereNull('threads.imported');
+            })
+            ->whereNull('threads.send_status')
+            ->whereBetween('threads.created_at', [$now->copy()->subDays(self::WINDOW_DAYS), $now->copy()->subSeconds(self::LOST_GRACE)])
+            ->whereNotExists(function ($q) {
+                $q->select(DB::raw(1))
+                    ->from('wordpresschat_messages')
+                    ->whereRaw('wordpresschat_messages.thread_id = threads.id');
+            })
+            ->orderBy('threads.id')
+            ->get(['threads.id', 'threads.conversation_id']);
+
+        $marked = 0;
+
+        foreach ($threads as $thread) {
+            try {
+                Message::create([
+                    'conversation_id' => $thread->conversation_id,
+                    'thread_id'       => $thread->id,
+                    'session_id'      => null,
+                    'direction'       => Message::DIRECTION_OUT,
+                    'via'             => Message::VIA_CHAT,
+                    'published_at'    => null,
+                    'lost_at'         => $now,
+                ]);
+            } catch (QueryException $e) {
+                // A concurrent run inserted it first: it writes the item.
+                if (Message::where('thread_id', $thread->id)->exists()) {
+                    continue;
+                }
+
+                throw $e;
+            }
+
+            $conversation = Conversation::find($thread->conversation_id);
+
+            if ($conversation) {
+                FailureLineItem::create($conversation, __('A reply did not reach the website chat. Send it again if it is still needed.'));
+            }
+
+            $marked++;
+        }
+
+        return $marked;
     }
 }

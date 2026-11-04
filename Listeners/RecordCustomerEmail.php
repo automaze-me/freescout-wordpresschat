@@ -8,6 +8,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Modules\WordPressChat\Entities\ConversationState;
 use Modules\WordPressChat\Entities\Message;
+use Modules\WordPressChat\Services\FailureLineItem;
 use Modules\WordPressChat\Services\IdentityLineItem;
 use Modules\WordPressChat\WordPressChat;
 
@@ -19,10 +20,10 @@ use Modules\WordPressChat\WordPressChat;
  * already have a Message row, so they are skipped.
  *
  * Bounces and auto-replies (an out-of-office answer) are not the customer
- * writing: core files them as customer threads too, but they get no row,
- * no cut-off and no line item, so a mistyped address or an absent visitor
- * never locks the chat. Plan 3 turns a bounce into its own failure line
- * item.
+ * writing: core files them as customer threads too, but they get no row and
+ * no cut-off, so a mistyped address or an absent visitor never locks the
+ * chat. A bounce gets one red failure line item (Ruling D9); an auto-reply
+ * is ignored entirely.
  *
  * The row and the cut-off are written in one transaction, so an email row
  * never exists without its cut-off. Its unique-violation catch sits outside
@@ -32,6 +33,8 @@ use Modules\WordPressChat\WordPressChat;
  */
 class RecordCustomerEmail
 {
+    const BOUNCE_NOTED_META = 'wordpresschat.bounce_noted';
+
     public function handle($conversation, $thread, $customer = null)
     {
         try {
@@ -40,9 +43,23 @@ class RecordCustomerEmail
                 || !$thread instanceof Thread
                 || (int) $thread->type !== Thread::TYPE_CUSTOMER
                 || (int) $thread->state !== Thread::STATE_PUBLISHED
-                || $thread->isBounce()
                 || $thread->isAutoResponder()
                 || Message::where('thread_id', $thread->id)->exists()) {
+                return;
+            }
+
+            if ($thread->isBounce()) {
+                // Not the customer writing: no row, no cut-off, one red
+                // line item (Ruling D9), written once per bounce.
+                if (!$thread->getMeta(self::BOUNCE_NOTED_META)) {
+                    $thread->setMeta(self::BOUNCE_NOTED_META, true);
+                    $thread->save();
+
+                    FailureLineItem::create($conversation, __('The email to :email bounced. The visitor may not have received the reply.', [
+                        'email' => (string) $conversation->customer_email,
+                    ]));
+                }
+
                 return;
             }
 
