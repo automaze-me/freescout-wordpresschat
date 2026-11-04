@@ -171,6 +171,95 @@ class ContinueLinkTest extends TestCase
         }
     }
 
+    public function test_originator_redeeming_its_own_link_keeps_one_access_row()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site);
+        $link = $this->mint($chat['conversation']);
+
+        $response = $this->api('POST', $site, '/continue', $chat['token'], ['link' => $link]);
+        $response->assertStatus(200);
+        $this->assertSame('verified', $response->json()['identity']['level']);
+
+        $rows = Access::where('session_id', $chat['session']->id)->where('conversation_id', $chat['conversation']->id)->get();
+        $this->assertCount(1, $rows);
+        $this->assertNotNull($rows[0]->verified_at);
+    }
+
+    public function test_new_token_taken_on_another_site_is_409()
+    {
+        $siteA = $this->makeSite(['url' => 'https://a.test/']);
+        $siteB = $this->makeSite(['url' => 'https://b.test/']);
+        $taken = $this->startChat($siteA)['token'];
+        $conversationB = $this->startChat($siteB)['conversation'];
+        $link = $this->mint($conversationB);
+
+        $this->api('POST', $siteB, '/continue', null, ['link' => $link, 'new_token' => $taken])
+            ->assertStatus(409)->assertExactJson(['error' => 'conflict']);
+
+        $this->assertNull(Link::where('token_hash', hash('sha256', $link))->firstOrFail()->used_at);
+    }
+
+    public function test_redeeming_shows_none_of_the_customers_other_conversations()
+    {
+        $site = $this->makeSite();
+        $one = $this->startChat($site, 'First chat');
+        $two = $this->startChat($site, 'Second chat secret');
+        $this->typeEmail($site, $one['token'], 'same@example.test');
+        $this->typeEmail($site, $two['token'], 'same@example.test');
+        $this->assertSame(
+            (int) $one['conversation']->fresh()->customer_id,
+            (int) $two['conversation']->fresh()->customer_id
+        );
+        $link = $this->mint($one['conversation']);
+
+        list($response, $token) = $this->redeemAsNewBrowser($site, $link);
+        $response->assertStatus(200);
+
+        $access = Access::where('session_id', $this->sessionOf($token)->id)->pluck('conversation_id')->all();
+        $this->assertSame([(int) $one['conversation']->id], array_map('intval', $access));
+
+        $texts = $this->texts($this->poll($site, $token));
+        $this->assertContains('First chat', $texts);
+        $this->assertNotContains('Second chat secret', $texts);
+    }
+
+    public function test_mint_without_a_state_writes_nothing()
+    {
+        $site = $this->makeSite();
+        $conversation = $this->startChat($site)['conversation'];
+        ConversationState::where('conversation_id', $conversation->id)->delete();
+        $states = ConversationState::count();
+        $links = Link::count();
+
+        try {
+            ContinueLink::mint($conversation);
+            $this->fail('mint() must throw without a state row.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame($states, ConversationState::count());
+            $this->assertSame($links, Link::count());
+        }
+    }
+
+    public function test_retry_after_a_lost_answer_gets_200()
+    {
+        $site = $this->makeSite();
+        $conversation = $this->startChat($site)['conversation'];
+        $link = $this->mint($conversation);
+
+        list($first, $token) = $this->redeemAsNewBrowser($site, $link);
+        $first->assertStatus(200);
+        $key = $first->json()['conversation']['key'];
+
+        $retry = $this->api('POST', $site, '/continue', $token, ['link' => $link]);
+        $retry->assertStatus(200);
+        $this->assertSame($key, $retry->json()['conversation']['key']);
+
+        $other = $this->startChat($site)['token'];
+        $this->api('POST', $site, '/continue', $other, ['link' => $link])
+            ->assertStatus(410)->assertExactJson(['error' => 'link_invalid']);
+    }
+
     public function test_new_browser_redeems_and_sees_full_history()
     {
         $site = $this->makeSite();
@@ -337,9 +426,9 @@ class ContinueLinkTest extends TestCase
         $second->assertStatus(410)->assertExactJson(['error' => 'link_invalid']);
         $this->assertNull(Session::where('token_hash', hash('sha256', $secondToken))->first());
 
-        // Not even the browser that redeemed it can use it twice.
-        $this->api('POST', $site, '/continue', $firstToken, ['link' => $link])
-            ->assertStatus(410)->assertExactJson(['error' => 'link_invalid']);
+        // The browser that redeemed it may retry (a lost answer): see
+        // test_retry_after_a_lost_answer_gets_200. Writes nothing.
+        $this->api('POST', $site, '/continue', $firstToken, ['link' => $link])->assertStatus(200);
 
         $stored = Link::where('token_hash', hash('sha256', $link))->firstOrFail();
         $this->assertSame((int) $this->sessionOf($firstToken)->id, (int) $stored->used_by_session_id);

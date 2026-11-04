@@ -70,7 +70,7 @@ class InboundMessage
                 // The conversation this browser is in; a closed one is
                 // followed by a new conversation.
                 $latest = Visibility::latestConversation($session);
-                $conversation = self::openOrNull($latest);
+                $conversation = self::continuableFrom($session, $latest);
                 $isNew = $conversation === null;
 
                 // A browser verified on the target conversation writes as
@@ -212,7 +212,37 @@ class InboundMessage
      */
     public static function continuable(Session $session): ?Conversation
     {
-        return self::openOrNull(Visibility::latestConversation($session));
+        return self::continuableFrom($session, Visibility::latestConversation($session));
+    }
+
+    /**
+     * openOrNull() plus the declined-stale-chat rule: a fresh account
+     * session does not continue an anonymous chat that login declined to
+     * bind (VisitorIdentity::login() released its placeholder customer).
+     * The chat counts as such when it is not bound to an account, belongs
+     * to another customer than the session's, and the session is not
+     * verified on it. The next message then starts a new conversation.
+     */
+    private static function continuableFrom(Session $session, ?Conversation $latest): ?Conversation
+    {
+        $conversation = self::openOrNull($latest);
+
+        if (!$conversation || !$session->accountFresh()) {
+            return $conversation;
+        }
+
+        // A plain read: ConversationState::of() would create a row.
+        $state = ConversationState::where('conversation_id', $conversation->id)->first();
+
+        if ($state
+            && $state->wp_user_id === null
+            && (int) $conversation->customer_id !== (int) $session->customer_id
+            && !self::isVerified($session, $conversation)
+        ) {
+            return null;
+        }
+
+        return $conversation;
     }
 
     private static function openOrNull(?Conversation $conversation): ?Conversation

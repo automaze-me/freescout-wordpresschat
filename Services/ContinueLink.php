@@ -33,8 +33,9 @@ class ContinueLink
      */
     public static function mint(Conversation $conversation): string
     {
-        $state = ConversationState::of($conversation);
-        $site = Site::find($state->site_id);
+        // A plain read, never of(): a failed mint must write nothing.
+        $state = ConversationState::where('conversation_id', $conversation->id)->first();
+        $site = $state ? Site::find($state->site_id) : null;
 
         if (!$site) {
             throw new \RuntimeException('WordPressChat: conversation #'.$conversation->id.' has no website for a continue link.');
@@ -70,6 +71,18 @@ class ContinueLink
         }
 
         return $link;
+    }
+
+    /**
+     * Whether $token names a link of $site that $session already redeemed
+     * (a retry after a lost answer). Read only.
+     */
+    public static function usedBy(Site $site, string $token, Session $session): bool
+    {
+        return Link::where('token_hash', hash('sha256', $token))
+            ->where('site_id', $site->id)
+            ->where('used_by_session_id', $session->id)
+            ->exists();
     }
 
     /**

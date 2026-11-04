@@ -213,6 +213,55 @@ class AccountIdentityTest extends TestCase
         $this->assertSame('anna@example.test', $conversation->customer_email);
     }
 
+    /** Re-review N3: a login-declined stale chat is not continued under the account. */
+    public function test_a_declined_stale_chat_is_not_continued()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site, 'Left behind');
+        $placeholder = (int) $chat['session']->customer_id;
+
+        // Backdated rather than Carbon::setTestNow(): a frozen clock makes
+        // core's TerminateHandler throw a deprecation on every request.
+        Message::where('conversation_id', $chat['conversation']->id)
+            ->update(['created_at' => now()->subSeconds(VisitorIdentity::ACCOUNT_TTL + 60)]);
+
+        $this->api('POST', $site, '/identity', $chat['token'], [
+            'login_token' => $this->loginToken($site, $chat['token'], ['uid' => 7]),
+        ])->assertStatus(200);
+
+        $sent = $this->say($site, $chat['token'], 'Hello again');
+        $sent->assertStatus(201);
+
+        $message = Message::find($sent->json()['message']['id']);
+        $this->assertNotSame((int) $chat['conversation']->id, (int) $message->conversation_id);
+        $y = Conversation::find($message->conversation_id);
+        $this->assertSame('anna@example.test', Customer::find($y->customer_id)->getMainEmail());
+        $this->assertSame((int) $chat['session']->fresh()->customer_id, (int) $y->customer_id);
+
+        $x = $chat['conversation']->fresh();
+        $this->assertSame(0, Thread::where('conversation_id', $x->id)->where('body', 'like', '%Hello again%')->count());
+        $this->assertSame($placeholder, (int) $x->customer_id);
+        $this->assertSame('', Customer::find($placeholder)->getMainEmail());
+    }
+
+    /** Guards Ruling P12: a recent anonymous chat is bound and continued. */
+    public function test_a_recent_anonymous_chat_is_still_bound_and_continued()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site, 'Just started');
+
+        $this->api('POST', $site, '/identity', $chat['token'], [
+            'login_token' => $this->loginToken($site, $chat['token'], ['uid' => 7]),
+        ])->assertStatus(200);
+
+        $sent = $this->say($site, $chat['token'], 'Hello again');
+        $sent->assertStatus(201);
+
+        $message = Message::find($sent->json()['message']['id']);
+        $this->assertSame((int) $chat['conversation']->id, (int) $message->conversation_id);
+        $this->assertSame(7, (int) $this->stateOf($chat['conversation'])->wp_user_id);
+    }
+
     public function test_second_device_discovers_account_chats()
     {
         $site = $this->makeSite();

@@ -127,6 +127,12 @@ class IdentityController extends Controller
         }
 
         if (!ContinueLink::find($site, $link)) {
+            // A retry after a lost answer: the link is used, by this very
+            // session. Answer as the first redemption did, write nothing.
+            if ($session && ContinueLink::usedBy($site, $link, $session)) {
+                return response()->json(Visibility::status($session->fresh() ?: $session));
+            }
+
             return $this->linkInvalid();
         }
 
