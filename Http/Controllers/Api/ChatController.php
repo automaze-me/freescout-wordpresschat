@@ -19,8 +19,27 @@ class ChatController extends Controller
     const MAX_POLL = 100;
 
     /**
-     * POST …/messages {text, client_message_id}. Without an X-Chat-Token
-     * header a new visitor session is issued and its token returned once.
+     * Upper bound for ids the client sends (`after`, `message_ids`): the
+     * columns are 4-byte integers, and PostgreSQL rejects a larger bound
+     * parameter with an error (22003) where MySQL simply matches nothing.
+     */
+    const MAX_ID = 2147483647;
+
+    /**
+     * Seconds a closed conversation keeps the widget polling. "Reply &
+     * Close" flips the status at once, but the closing reply is published
+     * only after core's undo window (about 15 s) has passed; stopping on the
+     * first `closed` would lose that reply.
+     */
+    const CLOSED_POLL_GRACE = 120;
+
+    /**
+     * POST …/messages {text, client_message_id, new_token}. Without an
+     * X-Chat-Token header the body must carry `new_token`, a token the widget
+     * generated for its first message: the session is created for it (or
+     * found again, when this is a retry of a first message whose response
+     * was lost) and the token is echoed back. With the header, new_token is
+     * ignored.
      *
      * Validation is done by hand: this route group is not in the `web`
      * group and the widget may not send Accept: application/json, so a
@@ -41,7 +60,7 @@ class ChatController extends Controller
         }
 
         $text = $request->input('text');
-        $text = is_string($text) ? trim($text) : '';
+        $text = is_string($text) ? trim(self::stripControlChars($text)) : '';
         $length = mb_strlen($text, 'UTF-8');
 
         if ($length < 1 || $length > self::MAX_TEXT_LENGTH) {
@@ -54,11 +73,21 @@ class ChatController extends Controller
             return $this->invalid('client_message_id');
         }
 
-        $issuedToken = null;
+        // Validated last of the fields: nothing is written before every
+        // field has passed.
+        $newToken = null;
         if (!$session) {
-            $issued      = VisitorAuth::issue($site);
-            $session     = $issued['session'];
-            $issuedToken = $issued['token'];
+            $newToken = $request->input('new_token');
+
+            if (!is_string($newToken) || !preg_match('/\A[A-Za-z0-9_-]{43}\z/', $newToken)) {
+                return $this->invalid('new_token');
+            }
+
+            $session = VisitorAuth::claim($site, $newToken);
+
+            if (!$session) {
+                return response()->json(['error' => 'conflict'], 409);
+            }
         }
 
         try {
@@ -68,8 +97,8 @@ class ChatController extends Controller
         }
 
         $payload = [];
-        if ($issuedToken !== null) {
-            $payload['token'] = $issuedToken;
+        if ($newToken !== null) {
+            $payload['token'] = $newToken;
         }
         $payload['message'] = MessagePresenter::present($message);
 
@@ -87,7 +116,7 @@ class ChatController extends Controller
         }
 
         $after = $request->query('after', '0');
-        if (!is_string($after) || !ctype_digit($after) || strlen($after) > 18) {
+        if (!is_string($after) || !ctype_digit($after) || strlen($after) > 18 || (int) $after > self::MAX_ID) {
             return $this->invalid('after');
         }
 
@@ -104,6 +133,7 @@ class ChatController extends Controller
             if ($conv) {
                 $conversation = [
                     'status' => (int) $conv->status === Conversation::STATUS_CLOSED ? 'closed' : 'open',
+                    'poll'   => self::keepPolling($conv),
                 ];
             }
         }
@@ -131,7 +161,7 @@ class ChatController extends Controller
             return $this->invalid('message_ids');
         }
         foreach ($ids as $id) {
-            if (!is_int($id) || $id < 0) {
+            if (!is_int($id) || $id < 0 || $id > self::MAX_ID) {
                 return $this->invalid('message_ids');
             }
         }
@@ -150,6 +180,42 @@ class ChatController extends Controller
         }
 
         return response('', 204);
+    }
+
+    /**
+     * Whether the widget should keep polling this conversation: while it is
+     * active or pending, and for CLOSED_POLL_GRACE seconds after it was
+     * closed (see the constant). Not for spam, a conversation closed earlier
+     * or without a closed_at, or one that is no longer published (deleted).
+     */
+    private static function keepPolling(Conversation $conv): bool
+    {
+        if ((int) $conv->state !== Conversation::STATE_PUBLISHED) {
+            return false;
+        }
+
+        $status = Conversation::toMainStatus($conv->status);
+
+        if ($status === Conversation::STATUS_ACTIVE || $status === Conversation::STATUS_PENDING) {
+            return true;
+        }
+
+        if ($status === Conversation::STATUS_CLOSED && $conv->closed_at) {
+            return $conv->closed_at->gt(now()->subSeconds(self::CLOSED_POLL_GRACE));
+        }
+
+        return false;
+    }
+
+    /**
+     * Removes C0 control characters other than tab, line feed and carriage
+     * return, and DEL. PostgreSQL text columns reject a NUL byte (22021).
+     * The bytes 0x00-0x1F and 0x7F never occur inside a multi-byte UTF-8
+     * sequence, so a byte-wise replace is safe.
+     */
+    private static function stripControlChars(string $text): string
+    {
+        return preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $text);
     }
 
     private function invalid($field)

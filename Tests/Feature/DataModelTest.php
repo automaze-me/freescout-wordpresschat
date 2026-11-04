@@ -43,7 +43,11 @@ class DataModelTest extends TestCase
         $this->message(['thread_id' => 77]);
 
         $this->expectException(QueryException::class);
-        $this->message(['thread_id' => 77, 'client_message_id' => 'x']);
+        // A savepoint around the violating insert: on PostgreSQL a failed
+        // statement would otherwise abort the test's own transaction.
+        DB::transaction(function () {
+            $this->message(['thread_id' => 77, 'client_message_id' => 'x']);
+        });
     }
 
     public function test_client_message_id_unique_per_session()
@@ -54,6 +58,9 @@ class DataModelTest extends TestCase
         $this->assertSame(2, Message::where('client_message_id', 'c1')->count());
 
         $this->expectException(QueryException::class);
-        $this->message(['thread_id' => 3, 'session_id' => 1, 'client_message_id' => 'c1']);
+        // A savepoint, as above.
+        DB::transaction(function () {
+            $this->message(['thread_id' => 3, 'session_id' => 1, 'client_message_id' => 'c1']);
+        });
     }
 }

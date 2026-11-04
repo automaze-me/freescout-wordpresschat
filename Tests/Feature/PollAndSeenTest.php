@@ -42,9 +42,12 @@ class PollAndSeenTest extends TestCase
     /** Sends a visitor message via the real endpoint; returns [token, message id, conversation id]. */
     private function visitorSays(Site $site, $text, $token = null)
     {
-        $r = $this->call_api('POST', $site, '/messages', $token, [
-            'text' => $text, 'client_message_id' => 'cmid-'.str_pad(++$this->n, 6, '0', STR_PAD_LEFT),
-        ]);
+        $data = ['text' => $text, 'client_message_id' => 'cmid-'.str_pad(++$this->n, 6, '0', STR_PAD_LEFT)];
+        if ($token === null) {
+            // The widget's own token for its first message.
+            $data['new_token'] = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+        }
+        $r = $this->call_api('POST', $site, '/messages', $token, $data);
         $json = $r->json();
         $id = $json['message']['id'];
 
@@ -100,7 +103,7 @@ class PollAndSeenTest extends TestCase
         $this->assertSame(['visitor', 'agent', 'visitor'], array_column($json['messages'], 'role'));
         $this->assertSame('first', $json['messages'][0]['text']);
         $this->assertSame('Agent reply', trim($json['messages'][1]['text']));
-        $this->assertSame(['status' => 'open'], $json['conversation']);
+        $this->assertSame(['status' => 'open', 'poll' => true], $json['conversation']);
     }
 
     public function test_unpublished_reply_and_notes_are_not_returned()
@@ -133,6 +136,77 @@ class PollAndSeenTest extends TestCase
         $this->poll($site, $token, 'abc')->assertStatus(422);
         $this->assertSame(['error' => 'validation', 'field' => 'after'], $this->poll($site, $token, 'abc')->json());
         $this->poll($site, $token, -1)->assertStatus(422);
+    }
+
+    /** Sets the conversation's status (and closed_at) and returns the poll's `conversation` object. */
+    private function conversationAfter(Site $site, $token, $conversationId, $status, $closedAt = null)
+    {
+        $conversation = Conversation::find($conversationId);
+        $conversation->status = $status;
+        $conversation->closed_at = $closedAt;
+        $conversation->save();
+
+        $r = $this->poll($site, $token);
+        $r->assertStatus(200);
+
+        return $r->json()['conversation'];
+    }
+
+    public function test_poll_flag_follows_the_conversation_status()
+    {
+        $site = $this->site();
+        list($token, , $conv) = $this->visitorSays($site, 'first');
+
+        $this->assertSame(['status' => 'open', 'poll' => true], $this->conversationAfter($site, $token, $conv, Conversation::STATUS_ACTIVE));
+        $this->assertSame(['status' => 'open', 'poll' => true], $this->conversationAfter($site, $token, $conv, Conversation::STATUS_PENDING));
+        $this->assertSame(['status' => 'open', 'poll' => false], $this->conversationAfter($site, $token, $conv, Conversation::STATUS_SPAM));
+    }
+
+    public function test_closed_conversation_polls_only_during_the_grace_period()
+    {
+        $site = $this->site();
+        list($token, , $conv) = $this->visitorSays($site, 'first');
+
+        $this->assertSame(
+            ['status' => 'closed', 'poll' => true],
+            $this->conversationAfter($site, $token, $conv, Conversation::STATUS_CLOSED, now()->subSeconds(30))
+        );
+        $this->assertSame(
+            ['status' => 'closed', 'poll' => false],
+            $this->conversationAfter($site, $token, $conv, Conversation::STATUS_CLOSED, now()->subMinutes(10))
+        );
+        $this->assertSame(
+            ['status' => 'closed', 'poll' => false],
+            $this->conversationAfter($site, $token, $conv, Conversation::STATUS_CLOSED, null)
+        );
+    }
+
+    public function test_deleted_conversation_does_not_poll()
+    {
+        $site = $this->site();
+        list($token, , $conv) = $this->visitorSays($site, 'first');
+        $conversation = Conversation::find($conv);
+        $conversation->state = Conversation::STATE_DELETED;
+        $conversation->save();
+
+        $this->assertFalse($this->poll($site, $token)->json()['conversation']['poll']);
+    }
+
+    public function test_ids_above_the_integer_range_are_422()
+    {
+        $site = $this->site();
+        list($token, $m1) = $this->visitorSays($site, 'first');
+
+        $this->poll($site, $token, 2147483647)->assertStatus(200);
+        $this->poll($site, $token, '2147483648')
+            ->assertStatus(422)
+            ->assertExactJson(['error' => 'validation', 'field' => 'after']);
+        $this->poll($site, $token, '99999999999999')->assertStatus(422);
+
+        $this->call_api('POST', $site, '/seen', $token, ['message_ids' => [2147483647]])->assertStatus(204);
+        $this->call_api('POST', $site, '/seen', $token, ['message_ids' => [$m1, 2147483648]])
+            ->assertStatus(422)
+            ->assertExactJson(['error' => 'validation', 'field' => 'message_ids']);
     }
 
     public function test_poll_without_conversation_returns_null_conversation()

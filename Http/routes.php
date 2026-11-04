@@ -17,6 +17,8 @@ Route::group([
     })->where(['site' => $site, 'any' => '.*']);
 });
 
+// {id} allows at most 10 digits; SitesController::findSite() 404s the
+// 10-digit values above the 4-byte integer range (a 500 on PostgreSQL).
 Route::group([
     'middleware' => ['web', 'auth'],
     'prefix'     => \Helper::getSubdirectory(),
@@ -25,8 +27,8 @@ Route::group([
     Route::get('/wordpress-chat/sites', 'SitesController@index')->name('wordpresschat.sites.index');
     Route::get('/wordpress-chat/sites/create', 'SitesController@create')->name('wordpresschat.sites.create');
     Route::post('/wordpress-chat/sites', 'SitesController@store')->name('wordpresschat.sites.store');
-    Route::get('/wordpress-chat/sites/{id}/edit', 'SitesController@edit')->name('wordpresschat.sites.edit')->where('id', '[0-9]+');
-    Route::post('/wordpress-chat/sites/{id}', 'SitesController@update')->name('wordpresschat.sites.update')->where('id', '[0-9]+');
-    Route::post('/wordpress-chat/sites/{id}/delete', 'SitesController@destroy')->name('wordpresschat.sites.destroy')->where('id', '[0-9]+');
-    Route::post('/wordpress-chat/sites/{id}/secret', 'SitesController@regenerateSecret')->name('wordpresschat.sites.secret')->where('id', '[0-9]+');
+    Route::get('/wordpress-chat/sites/{id}/edit', 'SitesController@edit')->name('wordpresschat.sites.edit')->where('id', '[0-9]{1,10}');
+    Route::post('/wordpress-chat/sites/{id}', 'SitesController@update')->name('wordpresschat.sites.update')->where('id', '[0-9]{1,10}');
+    Route::post('/wordpress-chat/sites/{id}/delete', 'SitesController@destroy')->name('wordpresschat.sites.destroy')->where('id', '[0-9]{1,10}');
+    Route::post('/wordpress-chat/sites/{id}/secret', 'SitesController@regenerateSecret')->name('wordpresschat.sites.secret')->where('id', '[0-9]{1,10}');
 });

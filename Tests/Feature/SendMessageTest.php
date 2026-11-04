@@ -34,12 +34,35 @@ class SendMessageTest extends TestCase
         return $site;
     }
 
+    /** A token the way the widget makes one: 32 random bytes, base64url, no padding. */
+    private static function newToken()
+    {
+        return rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+    }
+
+    /** A visitor session, created the way a first message creates it. */
+    private function newSession(Site $site)
+    {
+        return VisitorAuth::claim($site, self::newToken());
+    }
+
     /**
      * POST a JSON body the way the widget does. $accept = false leaves out
      * the Accept: application/json header, which the widget may not send.
+     *
+     * Without a $token, the body gets a fresh `new_token` as the widget
+     * sends it, unless $data sets one; `'new_token' => null` leaves the key
+     * out entirely.
      */
     private function send(Site $site, array $data, $token = null, $accept = true)
     {
+        if ($token === null && !array_key_exists('new_token', $data)) {
+            $data['new_token'] = self::newToken();
+        }
+        if (array_key_exists('new_token', $data) && $data['new_token'] === null) {
+            unset($data['new_token']);
+        }
+
         $server = [
             'CONTENT_TYPE' => 'application/json',
             'HTTP_ORIGIN'  => self::ORIGIN,
@@ -375,6 +398,139 @@ class SendMessageTest extends TestCase
         $this->assertSame($messages, Message::count());
     }
 
+    /** Row counts of everything a send may write. */
+    private function rowCounts()
+    {
+        return [
+            'sessions'      => Session::count(),
+            'customers'     => \App\Customer::count(),
+            'conversations' => Conversation::count(),
+            'threads'       => Thread::count(),
+            'messages'      => Message::count(),
+            'access'        => Access::count(),
+        ];
+    }
+
+    public function test_lost_first_response_retry_lands_in_the_same_session()
+    {
+        $site = $this->site();
+        $newToken = self::newToken();
+        $data = ['text' => 'Hello', 'client_message_id' => 'lost-0001', 'new_token' => $newToken];
+
+        $first = $this->send($site, $data);
+        $retry = $this->send($site, $data);
+
+        $first->assertStatus(201);
+        $retry->assertStatus(200);
+        $this->assertSame($newToken, $first->json()['token']);
+        $this->assertSame($newToken, $retry->json()['token']);
+        $this->assertSame($first->json()['message']['id'], $retry->json()['message']['id']);
+
+        $session = VisitorAuth::resolve($site, $newToken);
+        $this->assertSame(1, Session::where('token_hash', hash('sha256', $newToken))->count());
+        $this->assertSame(1, Access::where('session_id', $session->id)->count());
+        $message = $this->messageFrom($first);
+        $this->assertSame((int) $session->id, (int) $message->session_id);
+        $this->assertSame(1, Thread::where('conversation_id', $message->conversation_id)->count());
+        $this->assertSame(1, Message::where('session_id', $session->id)->count());
+    }
+
+    public function test_messages_queued_behind_a_lost_first_one_share_its_session()
+    {
+        $site = $this->site();
+        $newToken = self::newToken();
+
+        $a = $this->send($site, ['text' => 'One', 'client_message_id' => 'queued-0001', 'new_token' => $newToken]);
+        $b = $this->send($site, ['text' => 'Two', 'client_message_id' => 'queued-0002', 'new_token' => $newToken]);
+
+        $a->assertStatus(201);
+        $b->assertStatus(201);
+        $this->assertSame($newToken, $b->json()['token']);
+
+        $session = VisitorAuth::resolve($site, $newToken);
+        $this->assertSame(1, Session::where('token_hash', hash('sha256', $newToken))->count());
+        $this->assertSame(1, Access::where('session_id', $session->id)->count());
+        $conversationId = $this->messageFrom($a)->conversation_id;
+        $this->assertSame((int) $conversationId, (int) $this->messageFrom($b)->conversation_id);
+        $this->assertSame(2, Thread::where('conversation_id', $conversationId)->where('type', Thread::TYPE_CUSTOMER)->count());
+    }
+
+    public function test_malformed_new_token_is_422_and_writes_nothing()
+    {
+        $site = $this->site();
+        $before = $this->rowCounts();
+
+        $bad = [
+            '42 chars'   => str_repeat('a', 42),
+            '44 chars'   => str_repeat('a', 44),
+            'a plus'     => str_repeat('a', 42).'+',
+            'an array'   => [str_repeat('a', 43)],
+            'missing'    => null,
+        ];
+        foreach ($bad as $case => $newToken) {
+            $this->send($site, ['text' => 'Hello', 'client_message_id' => 'badtoken-0001', 'new_token' => $newToken])
+                ->assertStatus(422)
+                ->assertExactJson(['error' => 'validation', 'field' => 'new_token']);
+
+            $this->assertSame($before, $this->rowCounts(), "new_token $case wrote rows.");
+        }
+    }
+
+    public function test_new_token_is_ignored_when_a_session_token_is_sent()
+    {
+        $site = $this->site();
+        $first = $this->send($site, ['text' => 'One', 'client_message_id' => 'ignored-0001']);
+        $token = $first->json()['token'];
+        $sessions = Session::count();
+
+        $second = $this->send($site, ['text' => 'Two', 'client_message_id' => 'ignored-0002', 'new_token' => 'not valid'], $token);
+
+        $second->assertStatus(201);
+        $this->assertArrayNotHasKey('token', $second->json());
+        $this->assertSame($sessions, Session::count());
+    }
+
+    public function test_new_token_of_another_site_is_409_and_writes_nothing()
+    {
+        $a = $this->site(str_repeat('a', 32));
+        $b = $this->site(str_repeat('b', 32));
+        $newToken = self::newToken();
+
+        $this->send($a, ['text' => 'Hello', 'client_message_id' => 'other-0001', 'new_token' => $newToken])->assertStatus(201);
+        $before = $this->rowCounts();
+
+        $this->send($b, ['text' => 'Hello', 'client_message_id' => 'other-0001', 'new_token' => $newToken])
+            ->assertStatus(409)
+            ->assertExactJson(['error' => 'conflict']);
+
+        $this->assertSame($before, $this->rowCounts());
+        $this->assertNull(VisitorAuth::resolve($b, $newToken));
+    }
+
+    public function test_control_characters_are_stripped_from_the_text()
+    {
+        $site = $this->site();
+
+        $response = $this->send($site, ['text' => "Hel\u{0000}lo\u{0007}\u{007F}\tthere\r\nfriend", 'client_message_id' => 'control-0001']);
+
+        $response->assertStatus(201);
+        $thread = Thread::find($this->messageFrom($response)->thread_id);
+        $this->assertStringNotContainsString("\0", $thread->body);
+        $this->assertSame("Hello\tthere<br />\r\nfriend", $thread->body);
+    }
+
+    public function test_text_of_only_control_characters_is_422_and_writes_nothing()
+    {
+        $site = $this->site();
+        $before = $this->rowCounts();
+
+        $this->send($site, ['text' => "\u{0000}\u{0001}\u{001F}\u{007F}", 'client_message_id' => 'control-0002'])
+            ->assertStatus(422)
+            ->assertExactJson(['error' => 'validation', 'field' => 'text']);
+
+        $this->assertSame($before, $this->rowCounts());
+    }
+
     /**
      * Simulates two concurrent requests with the same client_message_id: the
      * competing request commits between our duplicate pre-check and our
@@ -404,7 +560,7 @@ class SendMessageTest extends TestCase
     public function test_concurrent_duplicate_returns_the_winner()
     {
         $site = $this->site();
-        $session = VisitorAuth::issue($site)['session'];
+        $session = $this->newSession($site);
         $winner = $this->raceAgainst($site, $session, 'Hello');
 
         $message = InboundMessage::receive($site, $session, 'Hello', 'race-0001');
@@ -419,7 +575,7 @@ class SendMessageTest extends TestCase
     public function test_concurrent_duplicate_with_different_text_conflicts()
     {
         $site = $this->site();
-        $session = VisitorAuth::issue($site)['session'];
+        $session = $this->newSession($site);
         $this->raceAgainst($site, $session, 'Hello');
 
         $this->expectException(MessageConflictException::class);

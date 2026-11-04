@@ -29,6 +29,14 @@ class ApiFoundationTest extends TestCase
         return '/wordpress-chat/api/v1/sites/'.$publicId.'/'.$path;
     }
 
+    /** A visitor session from a token generated the way the widget does it: [session, token]. */
+    private function claimSession(Site $site)
+    {
+        $token = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+
+        return [VisitorAuth::claim($site, $token), $token];
+    }
+
     public function test_unknown_site_is_404()
     {
         $this->call('GET', $this->url(str_repeat('c', 32)))
@@ -92,10 +100,10 @@ class ApiFoundationTest extends TestCase
         $a = $this->site(str_repeat('a', 32));
         $b = $this->site(str_repeat('b', 32));
 
-        $issued = VisitorAuth::issue($a);
+        list($session, $token) = $this->claimSession($a);
 
-        $this->assertSame($issued['session']->id, VisitorAuth::resolve($a, $issued['token'])->id);
-        $this->assertNull(VisitorAuth::resolve($b, $issued['token']));
+        $this->assertSame($session->id, VisitorAuth::resolve($a, $token)->id);
+        $this->assertNull(VisitorAuth::resolve($b, $token));
         $this->assertNull(VisitorAuth::resolve($a, null));
         $this->assertNull(VisitorAuth::resolve($a, ''));
     }
@@ -104,12 +112,61 @@ class ApiFoundationTest extends TestCase
     {
         $site = $this->site(str_repeat('a', 32));
 
-        $issued = VisitorAuth::issue($site);
-        $row = DB::table('wordpresschat_sessions')->where('id', $issued['session']->id)->first();
+        list($session, $token) = $this->claimSession($site);
+        $row = DB::table('wordpresschat_sessions')->where('id', $session->id)->first();
 
-        $this->assertSame(hash('sha256', $issued['token']), $row->token_hash);
-        $this->assertNotSame($issued['token'], $row->token_hash);
+        $this->assertSame(hash('sha256', $token), $row->token_hash);
+        $this->assertNotSame($token, $row->token_hash);
         $this->assertSame(32, strlen($row->public_id));
-        $this->assertSame(1, preg_match('/^[A-Za-z0-9_-]{43}$/', $issued['token']));
+    }
+
+    public function test_claim_returns_the_same_session_for_the_same_token()
+    {
+        $a = $this->site(str_repeat('a', 32));
+        $b = $this->site(str_repeat('b', 32), 'https://other.test');
+
+        list($session, $token) = $this->claimSession($a);
+
+        $this->assertSame($session->id, VisitorAuth::claim($a, $token)->id);
+        $this->assertNull(VisitorAuth::claim($b, $token));
+        $this->assertSame(1, DB::table('wordpresschat_sessions')->where('token_hash', hash('sha256', $token))->count());
+    }
+
+    public function test_token_of_site_a_is_401_on_every_endpoint_of_site_b()
+    {
+        $a = $this->site(str_repeat('a', 32));
+        $b = $this->site(str_repeat('b', 32), 'https://other.test');
+        list(, $token) = $this->claimSession($a);
+
+        $tables = ['wordpresschat_sessions', 'wordpresschat_access', 'wordpresschat_messages', 'customers', 'conversations', 'threads'];
+        $counts = function () use ($tables) {
+            $out = [];
+            foreach ($tables as $table) {
+                $out[$table] = DB::table($table)->count();
+            }
+
+            return $out;
+        };
+        $before = $counts();
+
+        $server = [
+            'CONTENT_TYPE'      => 'application/json',
+            'HTTP_ACCEPT'       => 'application/json',
+            'HTTP_ORIGIN'       => 'https://other.test',
+            'HTTP_X_CHAT_TOKEN' => $token,
+        ];
+        $id = $b->public_id;
+
+        $send = $this->call('POST', $this->url($id), [], [], [], $server, json_encode(['text' => 'Hello', 'client_message_id' => 'cross-0001']));
+        $index = $this->call('GET', $this->url($id), [], [], [], $server);
+        $seen = $this->call('POST', $this->url($id, 'seen'), [], [], [], $server, json_encode(['message_ids' => [1]]));
+
+        foreach (['send' => $send, 'index' => $index, 'seen' => $seen] as $name => $response) {
+            $this->assertSame(401, $response->getStatusCode(), "$name on site B with site A's token");
+            $this->assertSame(['error' => 'unauthorized'], $response->json(), $name);
+            $this->assertSame('https://other.test', $response->headers->get('Access-Control-Allow-Origin'), $name);
+        }
+
+        $this->assertSame($before, $counts());
     }
 }

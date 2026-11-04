@@ -39,6 +39,22 @@ class SitesAdminTest extends TestCase
         $this->assertSame(1, Site::where('id', $id)->count());
     }
 
+    public function test_ids_above_the_integer_range_are_404()
+    {
+        $admin = $this->adminUser();
+        $this->makeSite();
+
+        foreach (['2147483648', '9999999999', '99999999999'] as $id) {
+            $this->actingAs($admin)->get("/wordpress-chat/sites/$id/edit")->assertStatus(404);
+            $this->actingAs($admin)->post("/wordpress-chat/sites/$id", [])->assertStatus(404);
+            $this->actingAs($admin)->post("/wordpress-chat/sites/$id/delete")->assertStatus(404);
+            $this->actingAs($admin)->post("/wordpress-chat/sites/$id/secret")->assertStatus(404);
+        }
+
+        // The largest id that can exist still gets the normal not-found.
+        $this->actingAs($admin)->get('/wordpress-chat/sites/2147483647/edit')->assertStatus(404);
+    }
+
     public function test_admin_can_view_pages()
     {
         $admin = $this->adminUser();

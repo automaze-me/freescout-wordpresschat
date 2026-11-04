@@ -82,18 +82,6 @@ class InboundMessage
                 }
                 $thread->save();
 
-                // The unique (session_id, client_message_id) index is the
-                // real duplicate guard: a concurrent request with the same
-                // id that committed after our lookup makes this throw.
-                $message = Message::create([
-                    'conversation_id'   => $conversation->id,
-                    'thread_id'         => $thread->id,
-                    'session_id'        => $session->id,
-                    'direction'         => Message::DIRECTION_IN,
-                    'client_message_id' => $clientMessageId,
-                    'published_at'      => now(),
-                ]);
-
                 // Core's order: last reply and preview are set before the
                 // filter runs. setPreview() gets the raw text, because the
                 // preview strips tags but never decodes entities.
@@ -107,6 +95,26 @@ class InboundMessage
                 );
 
                 $conversation->save();
+
+                // The last write before commit, so the message id is
+                // allocated as late as possible. That narrows the window in
+                // which an agent reply published by the queue takes a
+                // higher id but commits first: a poll in that window moves
+                // its `after` cursor past this message, and the visitor's
+                // other tabs never show it. Ids are still not strictly
+                // commit-ordered.
+                //
+                // The unique (session_id, client_message_id) index is the
+                // real duplicate guard: a concurrent request with the same
+                // id that committed after our lookup makes this throw.
+                $message = Message::create([
+                    'conversation_id'   => $conversation->id,
+                    'thread_id'         => $thread->id,
+                    'session_id'        => $session->id,
+                    'direction'         => Message::DIRECTION_IN,
+                    'client_message_id' => $clientMessageId,
+                    'published_at'      => now(),
+                ]);
             });
         } catch (QueryException $e) {
             $raced = self::find($session, $clientMessageId);

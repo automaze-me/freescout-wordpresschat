@@ -57,7 +57,7 @@ class SitesController extends Controller
         $this->authorizeAdmin();
 
         return view('wordpresschat::sites.form', [
-            'site'      => Site::findOrFail($id),
+            'site'      => $this->findSite($id),
             'mailboxes' => Mailbox::orderBy('name')->get(),
         ]);
     }
@@ -66,7 +66,7 @@ class SitesController extends Controller
     {
         $this->authorizeAdmin();
 
-        $site = Site::findOrFail($id);
+        $site = $this->findSite($id);
         $site->fill($this->validated($request));
         $site->save();
 
@@ -79,7 +79,7 @@ class SitesController extends Controller
     {
         $this->authorizeAdmin();
 
-        Site::findOrFail($id)->delete();
+        $this->findSite($id)->delete();
 
         \Session::flash('flash_success_floating', __('Website deleted'));
 
@@ -90,13 +90,27 @@ class SitesController extends Controller
     {
         $this->authorizeAdmin();
 
-        $site = Site::findOrFail($id);
+        $site = $this->findSite($id);
         $site->setSecret(self::newSecret());
         $site->save();
 
         \Session::flash('flash_success_floating', __('Secret regenerated. Update it in the WordPress plugin settings.'));
 
         return redirect()->route('wordpresschat.sites.edit', ['id' => $site->id]);
+    }
+
+    /**
+     * The site with this id, or a 404. Ids above the 4-byte integer range
+     * never exist, and PostgreSQL rejects them as a query parameter (22003)
+     * instead of matching nothing, so they are turned away before the query.
+     */
+    protected function findSite($id)
+    {
+        if (!ctype_digit((string) $id) || (int) $id > 2147483647) {
+            abort(404);
+        }
+
+        return Site::findOrFail($id);
     }
 
     /**

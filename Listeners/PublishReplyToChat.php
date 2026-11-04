@@ -33,6 +33,14 @@ class PublishReplyToChat
             $first = $replies->first();
 
             if (!$first || empty($first->id)) {
+                // Core builds $replies in the same request that created the
+                // reply, so this can't happen in any normal flow. If it
+                // does, a reply was lost: log it at error level (the default
+                // log_level would drop anything lower).
+                \Log::error('[WordPressChat] PublishReplyToChat: chat_conversation.send_reply fired with no deliverable reply', [
+                    'conversation_id' => $conversation->id,
+                ]);
+
                 return;
             }
 
