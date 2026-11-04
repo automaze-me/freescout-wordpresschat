@@ -556,15 +556,20 @@ class SendMessageTest extends TestCase
     {
         $site = $this->makeSite();
         $session = $this->newSession($site);
-        $fired = 0;
-        \Eventy::addAction('conversation.created_by_customer', function () use (&$fired) {
-            $fired++;
+        $created = 0;
+        $replied = 0;
+        \Eventy::addAction('conversation.created_by_customer', function () use (&$created) {
+            $created++;
+        }, 20, 3);
+        \Eventy::addAction('conversation.customer_replied', function () use (&$replied) {
+            $replied++;
         }, 20, 3);
         $this->raceAgainst($site, $session, 'Hello');
 
         InboundMessage::receive($site, $session, 'Hello', 'race-0001');
 
-        $this->assertSame(1, $fired);
+        $this->assertSame(1, $created);
+        $this->assertSame(0, $replied);
     }
 
     public function test_a_throwing_event_listener_does_not_skip_the_eventy_action()
