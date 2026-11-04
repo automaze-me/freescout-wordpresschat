@@ -32,19 +32,19 @@ class ConversationHeaderTest extends TestCase
         $this->assertSame('', ConversationHeader::render($conversation));
     }
 
-    public function test_pill_names_the_site_only_with_several_sites()
+    public function test_site_name_shown_only_with_several_sites_and_never_the_pill_text()
     {
         $site = $this->makeSite(['name' => 'Shop One']);
         $chat = $this->startChat($site);
 
         $html = ConversationHeader::render($chat['conversation']);
-        $this->assertStringContainsString('Website chat', $html);
+        $this->assertStringNotContainsString('Website chat', $html);
         $this->assertStringNotContainsString('Shop One', $html);
 
         $this->makeSite(['name' => 'Shop Two']);
 
         $html = ConversationHeader::render($chat['conversation']);
-        $this->assertStringContainsString('Website chat', $html);
+        $this->assertStringNotContainsString('Website chat', $html);
         $this->assertStringContainsString('Shop One', $html);
         $this->assertStringNotContainsString('Shop Two', $html);
     }

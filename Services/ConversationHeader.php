@@ -11,9 +11,10 @@ use Modules\WordPressChat\Level;
 use Modules\WordPressChat\WordPressChat;
 
 /**
- * What agents see on a website-chat conversation: the channel pill, the
- * identity badge and, for order-only links, a warning; plus a "via email"
- * chip on customer threads that arrived by email.
+ * What agents see on a website-chat conversation, beside core's own channel
+ * tag: the site name (several sites only), the identity badge and, for
+ * order-only links, a warning; plus a "via email" chip on customer threads
+ * that arrived by email.
  */
 class ConversationHeader
 {
