@@ -160,4 +160,22 @@ class SitesAdminTest extends TestCase
 
         $this->assertSame($before, Site::count());
     }
+
+    public function test_cleared_fallback_delay_means_the_default()
+    {
+        $admin = $this->adminUser();
+        $site  = $this->adminSite();
+
+        $this->actingAs($admin)->post("/wordpress-chat/sites/{$site->id}", [
+            'name'           => $site->name,
+            'url'            => 'http://other.test:8080/x',
+            'mailbox_id'     => $site->mailbox_id,
+            'fallback_delay' => '',
+        ])->assertSessionMissing('errors');
+
+        $this->assertSame(120, (int) $site->fresh()->fallback_delay);
+
+        $html = $this->actingAs($admin)->get("/wordpress-chat/sites/{$site->id}/edit")->getContent();
+        $this->assertStringContainsString('Empty means 120 seconds.', $html);
+    }
 }

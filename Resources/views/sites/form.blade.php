@@ -47,7 +47,7 @@
                     <div class="col-sm-6">
                         <input type="number" class="form-control input-sized" name="fallback_delay" value="{{ old('fallback_delay', $site->fallback_delay) }}" min="30" max="3600">
                         @include('partials/field_error', ['field' => 'fallback_delay'])
-                        <p class="text-help">{{ __('How long to wait for the visitor to read a reply before it is also sent by email. 30 to 3600 seconds.') }}</p>
+                        <p class="text-help">{{ __('How long to wait for the visitor to read a reply before it is also sent by email. 30 to 3600 seconds.') }} {{ __('Empty means 120 seconds.') }}</p>
                     </div>
                 </div>
 

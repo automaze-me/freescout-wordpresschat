@@ -5,6 +5,7 @@ namespace Modules\WordPressChat\Listeners;
 use App\Conversation;
 use App\Thread;
 use Modules\WordPressChat\Entities\Message;
+use Modules\WordPressChat\Services\DeliveryClock;
 use Modules\WordPressChat\WordPressChat;
 
 /**
@@ -68,6 +69,11 @@ class PublishReplyToChat
                 $message->thread_id = $fresh->id;
             }
 
+            // A reply that never reached the chat is never published late.
+            if ($message->lost_at) {
+                return;
+            }
+
             $message->conversation_id = $current->id;
             $message->direction = Message::DIRECTION_OUT;
             $message->session_id = null;
@@ -75,6 +81,11 @@ class PublishReplyToChat
             if (!$message->published_at) {
                 $message->published_at = now();
             }
+
+            $message->via = Message::VIA_CHAT;
+            $message->email_status = null;
+            $message->email_thread_id = null;
+            $message->fallback_due_at = $message->published_at->copy()->addSeconds(DeliveryClock::delayFor($current));
 
             $message->save();
         } catch (\Throwable $e) {

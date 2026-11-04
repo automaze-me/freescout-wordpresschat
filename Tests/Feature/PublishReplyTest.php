@@ -155,4 +155,77 @@ class PublishReplyTest extends TestCase
         $this->assertSame('2020-01-02 03:04:05', $fresh->published_at->format('Y-m-d H:i:s'));
         $this->assertSame(0, Message::where('direction', Message::DIRECTION_OUT)->where('conversation_id', $conv->id)->count());
     }
+
+    public function test_republishing_an_email_choice_row_as_chat_resets_it()
+    {
+        $conv  = $this->conversation();
+        $agent = $this->thread($conv, Thread::TYPE_MESSAGE);
+        Message::create([
+            'conversation_id' => $conv->id,
+            'thread_id'       => $agent->id,
+            'direction'       => Message::DIRECTION_OUT,
+            'via'             => Message::VIA_EMAIL,
+            'email_status'    => Message::EMAIL_QUEUED,
+            'email_thread_id' => $agent->id,
+            'published_at'    => now(),
+        ]);
+
+        $this->fire($conv, [$agent]);
+
+        $row = Message::where('thread_id', $agent->id)->first();
+        $this->assertSame(Message::VIA_CHAT, (int) $row->via);
+        $this->assertNull($row->email_status);
+        $this->assertNull($row->email_thread_id);
+        $this->assertNotNull($row->fallback_due_at);
+    }
+
+    public function test_a_lost_row_is_not_published()
+    {
+        $conv  = $this->conversation();
+        $agent = $this->thread($conv, Thread::TYPE_MESSAGE);
+        Message::create([
+            'conversation_id' => $conv->id,
+            'thread_id'       => $agent->id,
+            'direction'       => Message::DIRECTION_OUT,
+            'lost_at'         => now(),
+        ]);
+
+        $this->fire($conv, [$agent]);
+
+        $row = Message::where('thread_id', $agent->id)->first();
+        $this->assertNull($row->published_at);
+        $this->assertNull($row->fallback_due_at);
+    }
+
+    public function test_row_follows_a_merged_thread()
+    {
+        $a = $this->conversation();
+        $b = $this->conversation();
+        $agent = $this->thread($a, Thread::TYPE_MESSAGE);
+        $agent->conversation_id = $b->id;
+        $agent->save();
+
+        $this->fire($a, [$agent]);
+
+        $row = Message::where('thread_id', $agent->id)->first();
+        $this->assertSame((int) $b->id, (int) $row->conversation_id);
+    }
+
+    public function test_a_throwing_save_is_caught()
+    {
+        $conv  = $this->conversation();
+        $agent = $this->thread($conv, Thread::TYPE_MESSAGE);
+
+        Message::saving(function () {
+            throw new \RuntimeException('boom');
+        });
+
+        try {
+            $this->fire($conv, [$agent]);
+        } finally {
+            Message::flushEventListeners();
+        }
+
+        $this->assertSame(0, $this->rows($conv)->count());
+    }
 }

@@ -72,12 +72,20 @@ class CustomerLink
             ? $provided
             : $customer->getMainEmail();
 
+        $before = $conversation->customer_email;
+
         if ((int) $conversation->customer_id !== (int) $customer->id) {
             $conversation->changeCustomer($email, $customer, null, $customer);
         } elseif ($email !== '' && $conversation->customer_email !== $email) {
             // The placeholder was upgraded in place (Ruling C8).
             $conversation->customer_email = $email;
             $conversation->save();
+        }
+
+        // The visitor who just gave an address is still on the page
+        // (Ruling D3).
+        if ($conversation->customer_email !== $before) {
+            DeliveryClock::restart($conversation);
         }
 
         if ($oldId > 0 && $oldId !== (int) $customer->id) {
