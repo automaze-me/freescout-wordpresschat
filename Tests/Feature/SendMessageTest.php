@@ -126,6 +126,7 @@ class SendMessageTest extends TestCase
             'text'       => "Hi & welcome\nsecond line",
             'author'     => null,
             'created_at' => $thread->created_at->copy()->setTimezone('UTC')->format('Y-m-d\TH:i:s\Z'),
+            'via'        => 'chat',
         ], $json['message']);
     }
 

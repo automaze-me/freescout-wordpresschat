@@ -78,7 +78,12 @@ class PollAndSeenTest extends TestCase
         $this->assertSame(['visitor', 'agent', 'visitor'], array_column($json['messages'], 'role'));
         $this->assertSame('first', $json['messages'][0]['text']);
         $this->assertSame('Agent reply', trim($json['messages'][1]['text']));
-        $this->assertSame(['status' => 'open', 'poll' => true], $json['conversation']);
+        $this->assertMatchesRegularExpression('/\A[a-f0-9]{32}\z/', $json['conversation']['key']);
+        $this->assertSame(
+            ['status' => 'open', 'poll' => true, 'key' => $json['conversation']['key'], 'notice' => null],
+            $json['conversation']
+        );
+        $this->assertSame(['level' => 'anonymous', 'account' => false], $json['identity']);
     }
 
     public function test_unpublished_reply_and_notes_are_not_returned()
@@ -113,7 +118,11 @@ class PollAndSeenTest extends TestCase
         $this->poll($site, $token, -1)->assertStatus(422);
     }
 
-    /** Sets the conversation's status (and closed_at) and returns the poll's `conversation` object. */
+    /**
+     * Sets the conversation's status (and closed_at) and returns the poll's
+     * `conversation` object without its key and notice, which are checked
+     * here: the status never changes them.
+     */
     private function conversationAfter(Site $site, $token, $conversationId, $status, $closedAt = null)
     {
         $conversation = Conversation::find($conversationId);
@@ -123,8 +132,14 @@ class PollAndSeenTest extends TestCase
 
         $r = $this->poll($site, $token);
         $r->assertStatus(200);
+        $result = $r->json()['conversation'];
 
-        return $r->json()['conversation'];
+        $this->assertMatchesRegularExpression('/\A[a-f0-9]{32}\z/', $result['key']);
+        $this->assertArrayHasKey('notice', $result);
+        $this->assertNull($result['notice']);
+        unset($result['key'], $result['notice']);
+
+        return $result;
     }
 
     public function test_poll_flag_follows_the_conversation_status()

@@ -2,10 +2,8 @@
 
 namespace Modules\WordPressChat\Http\Controllers\Api;
 
-use App\Conversation;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
-use Modules\WordPressChat\Entities\Access;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Exceptions\MessageConflictException;
 use Modules\WordPressChat\Services\InboundMessage;
@@ -26,14 +24,6 @@ class ChatController extends Controller
     const MAX_ID = 2147483647;
 
     /**
-     * Seconds a closed conversation keeps the widget polling. "Reply &
-     * Close" flips the status at once, but the closing reply is published
-     * only after core's undo window (about 15 s) has passed; stopping on the
-     * first `closed` would lose that reply.
-     */
-    const CLOSED_POLL_GRACE = 120;
-
-    /**
      * POST …/messages {text, client_message_id, new_token}. Without an
      * X-Chat-Token header the body must carry `new_token`, a token the widget
      * generated for its first message: the session is created for it (or
@@ -44,6 +34,10 @@ class ChatController extends Controller
      * Validation is done by hand: this route group is not in the `web`
      * group and the widget may not send Accept: application/json, so a
      * ValidationException would render as a redirect. Every answer is JSON.
+     *
+     * The answer is {token?, message, identity, conversation}; the last two
+     * have the poll's shape (Ruling C6), so the widget knows the
+     * conversation key right after its first message.
      */
     public function send(Request $request)
     {
@@ -106,12 +100,15 @@ class ChatController extends Controller
             $payload['token'] = $newToken;
         }
         $payload['message'] = MessagePresenter::present($message);
+        $payload += Visibility::status($session->fresh() ?: $session);
 
         return response()->json($payload, $message->wasRecentlyCreated ? 201 : 200);
     }
 
     /**
-     * GET …/messages?after=<id>: visible messages newer than the cursor.
+     * GET …/messages?after=<id>: visible messages newer than the cursor (a
+     * best-effort cursor, see Visibility), plus the identity and
+     * conversation summary from Visibility::status().
      */
     public function index(Request $request)
     {
@@ -131,23 +128,14 @@ class ChatController extends Controller
             ->limit(self::MAX_POLL)
             ->get();
 
-        $latestId = Access::where('session_id', $session->id)->max('conversation_id');
-        $conversation = null;
-        if ($latestId) {
-            $conv = Conversation::find($latestId);
-            if ($conv) {
-                $conversation = [
-                    'status' => (int) $conv->status === Conversation::STATUS_CLOSED ? 'closed' : 'open',
-                    'poll'   => self::keepPolling($conv),
-                ];
-            }
-        }
+        $status = Visibility::status($session);
 
         return response()->json([
             'messages'     => $messages->map(function ($m) {
                 return MessagePresenter::present($m);
             })->values()->all(),
-            'conversation' => $conversation,
+            'identity'     => $status['identity'],
+            'conversation' => $status['conversation'],
         ]);
     }
 
@@ -185,31 +173,6 @@ class ChatController extends Controller
         }
 
         return response('', 204);
-    }
-
-    /**
-     * Whether the widget should keep polling this conversation: while it is
-     * active or pending, and for CLOSED_POLL_GRACE seconds after it was
-     * closed (see the constant). Not for spam, a conversation closed earlier
-     * or without a closed_at, or one that is no longer published (deleted).
-     */
-    private static function keepPolling(Conversation $conv): bool
-    {
-        if ((int) $conv->state !== Conversation::STATE_PUBLISHED) {
-            return false;
-        }
-
-        $status = Conversation::toMainStatus($conv->status);
-
-        if ($status === Conversation::STATUS_ACTIVE || $status === Conversation::STATUS_PENDING) {
-            return true;
-        }
-
-        if ($status === Conversation::STATUS_CLOSED && $conv->closed_at) {
-            return $conv->closed_at->gt(now()->subSeconds(self::CLOSED_POLL_GRACE));
-        }
-
-        return false;
     }
 
     /**

@@ -9,6 +9,10 @@ class Message extends Model
     const DIRECTION_IN  = 1;
     const DIRECTION_OUT = 2;
 
+    /** Values of `via`: the channel the thread travelled by. */
+    const VIA_CHAT  = 1;
+    const VIA_EMAIL = 2;
+
     protected $table = 'wordpresschat_messages';
 
     protected $guarded = ['id'];

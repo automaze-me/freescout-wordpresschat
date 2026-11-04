@@ -10,6 +10,7 @@ use App\Thread;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Modules\WordPressChat\Entities\Access;
+use Modules\WordPressChat\Entities\ConversationState;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Entities\Session;
 use Modules\WordPressChat\Entities\Site;
@@ -68,6 +69,18 @@ class InboundMessage
                         'session_id'      => $session->id,
                         'conversation_id' => $conversation->id,
                     ]);
+
+                    // A plain insert, never ConversationState::of(): the
+                    // conversation is new, so nothing can race it, and a
+                    // catch inside this transaction would be useless on
+                    // PostgreSQL (Ruling C4). A fresh account login binds
+                    // the conversation to that account.
+                    ConversationState::create([
+                        'conversation_id' => $conversation->id,
+                        'site_id'         => $site->id,
+                        'public_id'       => bin2hex(random_bytes(16)),
+                        'wp_user_id'      => $session->accountFresh() ? (int) $session->wp_user_id : null,
+                    ]);
                 } else {
                     self::reactivate($conversation);
                 }
@@ -118,6 +131,7 @@ class InboundMessage
                     'thread_id'         => $thread->id,
                     'session_id'        => $session->id,
                     'direction'         => Message::DIRECTION_IN,
+                    'via'               => Message::VIA_CHAT,
                     'client_message_id' => $clientMessageId,
                     'published_at'      => now(),
                 ]);
@@ -162,19 +176,16 @@ class InboundMessage
     }
 
     /**
-     * The session's latest conversation, unless it was closed or is no
-     * longer published (deleted, merged away): then the next message starts
-     * a new conversation. Active, Pending and Spam ones continue.
+     * The session's latest visible conversation, unless it was closed or is
+     * no longer published (deleted, merged away): then the next message
+     * starts a new conversation. Active, Pending and Spam ones continue,
+     * also after a cut-off (spec §6.4 rule 6). A conversation the session
+     * no longer sees (an account chat after the login lapsed) is never
+     * continued.
      */
     private static function continuable(Session $session)
     {
-        $latestId = Access::where('session_id', $session->id)->max('conversation_id');
-
-        if (!$latestId) {
-            return null;
-        }
-
-        $conversation = Conversation::find($latestId);
+        $conversation = Visibility::latestConversation($session);
 
         if (!$conversation
             || $conversation->status == Conversation::STATUS_CLOSED

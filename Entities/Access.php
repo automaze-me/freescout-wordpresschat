@@ -10,6 +10,5 @@ class Access extends Model
 
     protected $guarded = ['id'];
 
-    protected $dates = ['created_at', 'updated_at'];
-
+    protected $dates = ['verified_at', 'created_at', 'updated_at'];
 }

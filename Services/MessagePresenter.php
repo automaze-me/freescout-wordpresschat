@@ -8,7 +8,9 @@ class MessagePresenter
 {
     /**
      * The widget's view of one chat message. Only plain text leaves the
-     * server; the widget renders it with textContent.
+     * server; the widget renders it with textContent. `via` is the channel
+     * the thread travelled by: "chat", or "email" for rows only verified
+     * browsers receive.
      */
     public static function present(Message $m): array
     {
@@ -28,6 +30,7 @@ class MessagePresenter
             'text'       => $thread ? self::text($thread->body) : '',
             'author'     => $author,
             'created_at' => $createdAt ? $createdAt->copy()->setTimezone('UTC')->format('Y-m-d\TH:i:s\Z') : null,
+            'via'        => (int) $m->via === Message::VIA_EMAIL ? 'email' : 'chat',
         ];
     }
 
