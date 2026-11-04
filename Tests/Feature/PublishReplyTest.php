@@ -228,4 +228,29 @@ class PublishReplyTest extends TestCase
 
         $this->assertSame(0, $this->rows($conv)->count());
     }
+
+    public function test_refiring_an_emailed_chat_reply_changes_nothing()
+    {
+        $conv  = $this->conversation();
+        $agent = $this->thread($conv, Thread::TYPE_MESSAGE);
+        $past  = now()->subHour()->startOfSecond();
+        $row = Message::create([
+            'conversation_id' => $conv->id,
+            'thread_id'       => $agent->id,
+            'direction'       => Message::DIRECTION_OUT,
+            'via'             => Message::VIA_CHAT,
+            'published_at'    => $past,
+            'fallback_due_at' => $past,
+            'email_status'    => Message::EMAIL_SENT,
+            'email_thread_id' => $agent->id,
+        ]);
+
+        $this->fire($conv, [$agent]);
+
+        $fresh = $row->fresh();
+        $this->assertSame(Message::EMAIL_SENT, (int) $fresh->email_status);
+        $this->assertSame((int) $agent->id, (int) $fresh->email_thread_id);
+        $this->assertSame($past->timestamp, $fresh->fallback_due_at->timestamp);
+        $this->assertSame($past->timestamp, $fresh->published_at->timestamp);
+    }
 }

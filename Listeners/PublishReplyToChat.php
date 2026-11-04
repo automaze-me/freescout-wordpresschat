@@ -74,7 +74,23 @@ class PublishReplyToChat
                 return;
             }
 
+            // Already published as chat (a queue retry or duplicate event):
+            // keep the delivery state, or an emailed reply would be due
+            // again. Only the merge path's conversation id still follows.
+            $alreadyPublished = $message->exists
+                && (int) $message->via === Message::VIA_CHAT
+                && $message->published_at;
+
             $message->conversation_id = $current->id;
+
+            if ($alreadyPublished) {
+                if ($message->isDirty()) {
+                    $message->save();
+                }
+
+                return;
+            }
+
             $message->direction = Message::DIRECTION_OUT;
             $message->session_id = null;
 
