@@ -57,6 +57,13 @@ class WordPressChatServiceProvider extends ServiceProvider
 
     protected function hooks()
     {
+        // Manage -> Website Chat (admins only).
+        \Eventy::addAction('menu.manage.append', function () {
+            if (auth()->user() && auth()->user()->isAdmin()) {
+                echo view('wordpresschat::menu')->render();
+            }
+        });
+
         // Make the website chat selectable as a communication channel.
         \Eventy::addFilter('channels.list', function ($channels) {
             $channels[WordPressChat::CHANNEL] = WordPressChat::channelName();
