@@ -114,10 +114,13 @@ class WordPressChatServiceProvider extends ServiceProvider
 
         // Core renders a line item only through getActionText(), which has no
         // branch for our NULL action_type and falls through to this filter.
+        // The body is stored escaped; a caller that asks for unescaped text
+        // (getActionDescription(), which escapes the result itself) gets it
+        // decoded, or it would be escaped twice.
         \Eventy::addFilter('thread.action_text', function ($didThis, $thread, $conversationNumber = null, $escape = true, $viewedByUser = null) {
             if ((int) $thread->type === \App\Thread::TYPE_LINEITEM
                 && $thread->getMeta(IdentityLineItem::LINEITEM_META)) {
-                return $thread->body;
+                return $escape ? $thread->body : html_entity_decode($thread->body, ENT_QUOTES);
             }
 
             return $didThis;

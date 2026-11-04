@@ -104,6 +104,44 @@ class CustomerEmailTest extends TestCase
         $this->assertSame(['Hello'], $texts);
     }
 
+    /**
+     * Final review I4: core files bounces and auto-replies as customer
+     * threads and fires `conversation.customer_replied` for them. Neither is
+     * the customer writing: no row, no cut-off, no line item.
+     */
+    public function test_bounces_and_auto_replies_never_cut_off()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site, 'Hello');
+        $conversation = $chat['conversation'];
+
+        $bounce = $this->emailThread($conversation, 'Delivery to anna@gmial.com failed');
+        $bounce->updateSendStatusData(['is_bounce' => true]);
+        $bounce->save();
+        $this->assertTrue($bounce->isBounce());
+        $this->fire($conversation, $bounce);
+
+        $auto = $this->emailThread($conversation, 'I am out of office');
+        $auto->headers = "From: anna@example.test\nAuto-Submitted: auto-replied\nX-Autoreply: yes";
+        $auto->save();
+        $this->assertTrue($auto->isAutoResponder());
+        $this->fire($conversation, $auto);
+
+        $this->assertSame(0, Message::whereIn('thread_id', [$bounce->id, $auto->id])->count());
+        $this->assertNull(ConversationState::of($conversation)->cutoff_message_id);
+        $this->assertCount(0, $this->lineItems($conversation));
+
+        $json = $this->poll($site, $chat['token']);
+        $this->assertNull($json['conversation']['notice']);
+
+        // The customer's own email afterwards still cuts off.
+        $real = $this->emailThread($conversation, 'Real answer');
+        $this->fire($conversation, $real);
+        $row = Message::where('thread_id', $real->id)->firstOrFail();
+        $this->assertSame((int) $row->id, (int) ConversationState::of($conversation)->cutoff_message_id);
+        $this->assertCount(1, $this->lineItems($conversation));
+    }
+
     public function test_chat_messages_never_cut_off()
     {
         $site = $this->makeSite();
@@ -171,5 +209,31 @@ class CustomerEmailTest extends TestCase
         $other = new Thread();
         $other->type = Thread::TYPE_LINEITEM;
         $this->assertSame('x', \Eventy::filter('thread.action_text', 'x', $other, 1, true, null));
+    }
+
+    /**
+     * Final review M3: the body is stored escaped. Escaped text for a
+     * caller that asks for it; decoded text for one that escapes the result
+     * itself (getActionDescription()), so it is never escaped twice.
+     */
+    public function test_line_item_text_is_decoded_when_not_escaped()
+    {
+        $site = $this->makeSite();
+        $conversation = $this->startChat($site)['conversation'];
+
+        $item = IdentityLineItem::create($conversation, "Visitor entered order number 1 \u{2192} linked to O'Brien");
+
+        $escaped = \Eventy::filter('thread.action_text', '', $item, 1, true, null);
+        $this->assertStringContainsString('O&#039;Brien', $escaped);
+
+        $plain = \Eventy::filter('thread.action_text', '', $item, 1, false, null);
+        $this->assertSame("Visitor entered order number 1 \u{2192} linked to O'Brien", $plain);
+
+        // Through core: escaped exactly once on either path.
+        $this->assertStringContainsString('O&#039;Brien', $item->getActionText('', true));
+        $this->assertStringContainsString("O'Brien", $item->getActionText('', false));
+        $description = $item->getActionDescription(1);
+        $this->assertStringContainsString('O&#039;Brien', $description);
+        $this->assertStringNotContainsString('&amp;#039;', $description);
     }
 }

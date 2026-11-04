@@ -5,6 +5,7 @@ namespace Modules\WordPressChat\Listeners;
 use App\Conversation;
 use App\Thread;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Modules\WordPressChat\Entities\ConversationState;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Services\IdentityLineItem;
@@ -17,8 +18,17 @@ use Modules\WordPressChat\WordPressChat;
  * browser (spec §6.4 rule 3). Our own chat messages fire the same action but
  * already have a Message row, so they are skipped.
  *
- * Runs outside any transaction, so the unique-violation catch on the insert
- * is safe on PostgreSQL (Ruling R4).
+ * Bounces and auto-replies (an out-of-office answer) are not the customer
+ * writing: core files them as customer threads too, but they get no row,
+ * no cut-off and no line item, so a mistyped address or an absent visitor
+ * never locks the chat. Plan 3 turns a bounce into its own failure line
+ * item.
+ *
+ * The row and the cut-off are written in one transaction, so an email row
+ * never exists without its cut-off. Its unique-violation catch sits outside
+ * that transaction (on PostgreSQL a failed statement aborts the transaction
+ * it sits in; Ruling R4). The line item follows after commit, written only
+ * by the run that set the cut-off.
  */
 class RecordCustomerEmail
 {
@@ -30,19 +40,37 @@ class RecordCustomerEmail
                 || !$thread instanceof Thread
                 || (int) $thread->type !== Thread::TYPE_CUSTOMER
                 || (int) $thread->state !== Thread::STATE_PUBLISHED
+                || $thread->isBounce()
+                || $thread->isAutoResponder()
                 || Message::where('thread_id', $thread->id)->exists()) {
                 return;
             }
 
+            // Outside the transaction: of() may insert, and it only
+            // recovers from a concurrent insert outside one (Ruling C4).
+            $state = ConversationState::of($conversation);
+            $set = false;
+
             try {
-                $row = Message::create([
-                    'conversation_id' => $conversation->id,
-                    'thread_id'       => $thread->id,
-                    'session_id'      => null,
-                    'direction'       => Message::DIRECTION_IN,
-                    'via'             => Message::VIA_EMAIL,
-                    'published_at'    => now(),
-                ]);
+                DB::transaction(function () use ($conversation, $thread, $state, &$set) {
+                    $row = Message::create([
+                        'conversation_id' => $conversation->id,
+                        'thread_id'       => $thread->id,
+                        'session_id'      => null,
+                        'direction'       => Message::DIRECTION_IN,
+                        'via'             => Message::VIA_EMAIL,
+                        'published_at'    => now(),
+                    ]);
+
+                    // Conditional update: the first cut-off wins, and only
+                    // the run that set it writes the line item.
+                    $set = ConversationState::where('id', $state->id)
+                        ->whereNull('cutoff_message_id')
+                        ->update([
+                            'cutoff_message_id' => $row->id,
+                            'cutoff_reason'     => ConversationState::CUTOFF_EMAIL,
+                        ]) > 0;
+                });
             } catch (QueryException $e) {
                 // A concurrent run inserted the row first: it does the rest.
                 if (Message::where('thread_id', $thread->id)->exists()) {
@@ -51,17 +79,6 @@ class RecordCustomerEmail
 
                 throw $e;
             }
-
-            $state = ConversationState::of($conversation);
-
-            // Conditional update: only the run that sets the first cut-off
-            // writes the line item.
-            $set = ConversationState::where('id', $state->id)
-                ->whereNull('cutoff_message_id')
-                ->update([
-                    'cutoff_message_id' => $row->id,
-                    'cutoff_reason'     => ConversationState::CUTOFF_EMAIL,
-                ]);
 
             if ($set) {
                 IdentityLineItem::create($conversation, __('Conversation continues by email'));
