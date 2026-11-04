@@ -30,7 +30,7 @@ class Cors
         $response->headers->set('Access-Control-Allow-Origin', $origin);
         $response->headers->set('Vary', 'Origin');
         $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        $response->headers->set('Access-Control-Allow-Headers', 'Content-Type, X-Chat-Token');
+        $response->headers->set('Access-Control-Allow-Headers', 'Content-Type, X-Chat-Token, X-Chat-Page');
         $response->headers->set('Access-Control-Max-Age', '600');
 
         return $response;

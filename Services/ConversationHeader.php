@@ -37,6 +37,7 @@ class ConversationHeader
             'siteName'  => $siteName,
             'label'     => Level::label($level),
             'showWarn'  => $level === Level::ORDER,
+            'presence'  => Presence::line($conversation),
         ])->render();
     }
 

@@ -15,7 +15,7 @@ class Session extends Model
 
     protected $guarded = ['id'];
 
-    protected $dates = ['account_until', 'created_at', 'updated_at'];
+    protected $dates = ['account_until', 'last_seen_at', 'created_at', 'updated_at'];
 
     /**
      * Whether the session holds a WordPress account login that is still

@@ -39,7 +39,7 @@ class ApiFoundationTest extends TestCase
         $response->assertStatus(204);
         $response->assertHeader('Access-Control-Allow-Origin', 'https://shop.test');
         $response->assertHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        $response->assertHeader('Access-Control-Allow-Headers', 'Content-Type, X-Chat-Token');
+        $response->assertHeader('Access-Control-Allow-Headers', 'Content-Type, X-Chat-Token, X-Chat-Page');
         $response->assertHeader('Access-Control-Max-Age', '600');
         $response->assertHeader('Vary', 'Origin');
     }

@@ -11,6 +11,7 @@ use Modules\WordPressChat\Services\ChatAttachment;
 use Modules\WordPressChat\Services\IdentityPayload;
 use Modules\WordPressChat\Services\InboundMessage;
 use Modules\WordPressChat\Services\MessagePresenter;
+use Modules\WordPressChat\Services\Presence;
 use Modules\WordPressChat\Services\Visibility;
 use Modules\WordPressChat\Services\VisitorAuth;
 use Modules\WordPressChat\Services\VisitorIdentity;
@@ -163,6 +164,10 @@ class ChatController extends Controller
         if (!is_string($after) || !ctype_digit($after) || strlen($after) > 18 || (int) $after > self::MAX_ID) {
             return $this->invalid('after');
         }
+
+        // Only polls record presence (Ruling E8).
+        $page = $request->header('X-Chat-Page');
+        Presence::record($session, is_string($page) ? $page : null);
 
         $messages = Visibility::query($session)
             ->where('wordpresschat_messages.id', '>', (int) $after)
