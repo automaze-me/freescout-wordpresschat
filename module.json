@@ -1,0 +1,23 @@
+{
+    "name": "Website Chat (WordPress)",
+    "alias": "wordpresschat",
+    "description": "Live chat from WordPress websites as a FreeScout channel, with automatic email follow-up.",
+    "version": "0.1.0",
+    "detailsUrl": "https://github.com/automaze-me/freescout-wordpresschat",
+    "author": "automaze.me",
+    "authorUrl": "https://automaze.me",
+    "license": "MIT",
+    "requiredAppVersion": "1.8.248",
+    "latestVersionUrl": "https://raw.githubusercontent.com/automaze-me/freescout-wordpresschat/refs/heads/main/module.json",
+    "latestVersionZipUrl": "https://github.com/automaze-me/freescout-wordpresschat/releases/latest/download/WordPressChat.zip",
+    "active": 0,
+    "order": 0,
+    "providers": [
+        "Modules\\WordPressChat\\Providers\\WordPressChatServiceProvider"
+    ],
+    "aliases": {},
+    "files": [
+        "start.php"
+    ],
+    "requires": []
+}
