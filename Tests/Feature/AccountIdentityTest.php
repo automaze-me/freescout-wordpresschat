@@ -245,6 +245,64 @@ class AccountIdentityTest extends TestCase
         );
     }
 
+    /**
+     * Re-review N1: device B is still on a closed account chat when device
+     * A starts a new one. B's next login refresh moves it into A's open
+     * chat, so B neither forks a third conversation nor stops polling.
+     */
+    public function test_refresh_moves_off_a_closed_chat_into_the_open_account_chat()
+    {
+        $site = $this->makeSite();
+        $b = $this->startAccountChat($site, 'Earlier question from device B');
+        $x = $b['conversation']->fresh();
+        $x->status = Conversation::STATUS_CLOSED;
+        $x->closed_at = now()->subHour();
+        $x->save();
+
+        $a = $this->startAccountChat($site, 'New question from device A');
+        $y = $a['conversation'];
+        $this->assertNotSame((int) $x->id, (int) $y->id);
+
+        $response = $this->api('POST', $site, '/identity', $b['token'], [
+            'login_token' => $this->loginToken($site, $b['token']),
+        ]);
+        $response->assertStatus(200);
+        $this->assertSame($this->stateOf($y)->public_id, $response->json()['conversation']['key']);
+        $this->assertSame('open', $response->json()['conversation']['status']);
+        $this->assertTrue($response->json()['conversation']['poll']);
+
+        $sent = $this->say($site, $b['token'], 'Follow-up from device B');
+        $sent->assertStatus(201);
+        $this->assertSame((int) $y->id, (int) Message::find($sent->json()['message']['id'])->conversation_id);
+        $this->assertSame(2, Conversation::whereIn('id', Access::where('session_id', $b['session']->id)->pluck('conversation_id'))->count());
+        $this->assertContains('Follow-up from device B', $this->texts($this->poll($site, $a['token'])));
+    }
+
+    /** N1 guard: an open conversation the session is in stays current. */
+    public function test_refresh_keeps_an_open_current_conversation()
+    {
+        $site = $this->makeSite();
+        $b = $this->startAccountChat($site, 'Question from device B');
+        $x = $b['conversation']->fresh();
+        $x->status = Conversation::STATUS_CLOSED;
+        $x->closed_at = now()->subHour();
+        $x->save();
+        $a = $this->startAccountChat($site, 'Question from device A');
+
+        // An agent reopens B's chat: both account chats are open now.
+        $x->status = Conversation::STATUS_ACTIVE;
+        $x->save();
+
+        $this->api('POST', $site, '/identity', $b['token'], [
+            'login_token' => $this->loginToken($site, $b['token']),
+        ])->assertStatus(200)->assertJsonFragment(['key' => $this->stateOf($x)->public_id]);
+
+        $sent = $this->say($site, $b['token'], 'Still about my question');
+        $sent->assertStatus(201);
+        $this->assertSame((int) $x->id, (int) Message::find($sent->json()['message']['id'])->conversation_id);
+        $this->assertNotSame((int) $x->id, (int) $a['conversation']->id);
+    }
+
     public function test_discovery_without_account_chats_creates_nothing()
     {
         $site = $this->makeSite();

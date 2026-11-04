@@ -113,8 +113,10 @@ class VisitorIdentity
      *    happens once, so the line item is written once. An older one was
      *    left by someone else at this browser: it is not bound, and its
      *    placeholder is not upgraded either (this session lets go of it);
-     * 5. the session's current conversation becomes the bound one, or,
-     *    when it has none yet, the newest account chat it now sees.
+     * 5. the session's current conversation becomes the bound one. A
+     *    session not in an open conversation it sees moves to the newest
+     *    open account chat (re-review N1: another device may have started
+     *    it); one in no conversation yet takes the newest account chat.
      * The session's email becomes the account email whenever the session
      * takes the account's customer.
      */
@@ -194,18 +196,29 @@ class VisitorIdentity
                 $locked->customer_id = $customer->id;
             }
 
-            // Discovery: a session in no conversation yet is in the newest
-            // account chat it now sees.
-            if (!(int) $locked->current_conversation_id && $chats->isNotEmpty()) {
-                $granted = array_intersect(
-                    array_keys(Visibility::grants($locked)),
+            // Discovery and follow-up (re-review N1): a session that is not in
+            // an open conversation it sees moves to the newest open account
+            // chat, which another device may have started; a session in no
+            // conversation yet takes the newest account chat, open or not.
+            if ($chats->isNotEmpty()) {
+                $grants = Visibility::grants($locked);
+                $granted = array_values(array_intersect(
+                    array_keys($grants),
                     $chats->map(function ($id) {
                         return (int) $id;
                     })->all()
-                );
+                ));
+                $currentId = (int) $locked->current_conversation_id;
+                $stays = $currentId > 0 && isset($grants[$currentId]) && self::openIds([$currentId]);
 
-                if ($granted) {
-                    $locked->current_conversation_id = max($granted);
+                if ($granted && !$stays) {
+                    $open = self::openIds($granted);
+
+                    if ($open) {
+                        $locked->current_conversation_id = max($open);
+                    } elseif ($currentId <= 0) {
+                        $locked->current_conversation_id = max($granted);
+                    }
                 }
             }
 
@@ -344,6 +357,25 @@ class VisitorIdentity
         }
 
         return $conversation;
+    }
+
+    /**
+     * The ids among $ids of conversations a visitor message would continue:
+     * published and not closed, as InboundMessage::continuable() decides.
+     *
+     * @param int[] $ids
+     * @return int[]
+     */
+    private static function openIds(array $ids): array
+    {
+        return Conversation::whereIn('id', $ids)
+            ->where('status', '!=', Conversation::STATUS_CLOSED)
+            ->where('state', Conversation::STATE_PUBLISHED)
+            ->pluck('id')
+            ->map(function ($id) {
+                return (int) $id;
+            })
+            ->all();
     }
 
     /** Still an anonymous placeholder: a customer without any email (Ruling P9). */
