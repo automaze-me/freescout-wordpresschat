@@ -3,9 +3,11 @@
 namespace Modules\WordPressChat\Providers;
 
 use Illuminate\Support\ServiceProvider;
+use Modules\WordPressChat\Console\SendDueEmails;
 use Modules\WordPressChat\Listeners\PublishReplyToChat;
 use Modules\WordPressChat\Listeners\RecordCustomerEmail;
 use Modules\WordPressChat\Services\ConversationHeader;
+use Modules\WordPressChat\Services\FailureLineItem;
 use Modules\WordPressChat\Services\IdentityLineItem;
 use Modules\WordPressChat\WordPressChat;
 
@@ -57,10 +59,24 @@ class WordPressChatServiceProvider extends ServiceProvider
     public function register()
     {
         $this->mergeConfigFrom(__DIR__.'/../Config/config.php', 'wordpresschat');
+
+        $this->commands([
+            SendDueEmails::class,
+        ]);
     }
 
     protected function hooks()
     {
+        // The fallback timer (Ruling D1). Core applies this filter to its
+        // scheduler, which FreeScout's per-minute cron runs.
+        \Eventy::addFilter('schedule', function ($schedule) {
+            $schedule->command('wordpresschat:send-due-emails')
+                ->everyMinute()
+                ->withoutOverlapping();
+
+            return $schedule;
+        });
+
         // Chat emails (Plan 3): every due reply, and the continue link.
         \Eventy::addFilter('email.reply_to_customer.threads', function ($threads, $conversation = null, $mailbox = null) {
             return \Modules\WordPressChat\Services\ChatEmail::threads($threads, $conversation);
@@ -129,11 +145,21 @@ class WordPressChatServiceProvider extends ServiceProvider
         // branch for our NULL action_type and falls through to this filter.
         // The body is stored escaped; a caller that asks for unescaped text
         // (getActionDescription(), which escapes the result itself) gets it
-        // decoded, or it would be escaped twice.
+        // decoded, or it would be escaped twice. A failure item is red for
+        // escaped (HTML) callers only: core's thread view passes the result
+        // through safe_raw_html(), which keeps a <span class>.
         \Eventy::addFilter('thread.action_text', function ($didThis, $thread, $conversationNumber = null, $escape = true, $viewedByUser = null) {
             if ((int) $thread->type === \App\Thread::TYPE_LINEITEM
                 && $thread->getMeta(IdentityLineItem::LINEITEM_META)) {
-                return $escape ? $thread->body : html_entity_decode($thread->body, ENT_QUOTES);
+                if (!$escape) {
+                    return html_entity_decode($thread->body, ENT_QUOTES);
+                }
+
+                if ($thread->getMeta(FailureLineItem::FAILURE_META)) {
+                    return '<span class="text-danger">'.$thread->body.'</span>';
+                }
+
+                return $thread->body;
             }
 
             return $didThis;

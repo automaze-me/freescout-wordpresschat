@@ -352,20 +352,26 @@ class InboundMessage
      * A visitor message puts a Pending conversation back to Active, so it
      * counts in the folder again. Spam stays Spam. The change goes through
      * core's `conversation.status_changing` filter and is saved by the
-     * caller together with the new thread.
+     * caller (with the new thread here; FailureLineItem saves it too).
+     *
+     * Returns whether the status changed.
      */
-    private static function reactivate(Conversation $conversation)
+    public static function reactivate(Conversation $conversation): bool
     {
         if ($conversation->status == Conversation::STATUS_ACTIVE || $conversation->status == Conversation::STATUS_SPAM) {
-            return;
+            return false;
         }
 
         $oldStatus = $conversation->status;
         $conversation->status = \Eventy::filter('conversation.status_changing', Conversation::STATUS_ACTIVE, $conversation);
 
-        if ($conversation->status != $oldStatus) {
-            $conversation->updateFolder();
+        if ($conversation->status == $oldStatus) {
+            return false;
         }
+
+        $conversation->updateFolder();
+
+        return true;
     }
 
     /**
