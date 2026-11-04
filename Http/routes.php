@@ -1,5 +1,22 @@
 <?php
 
+// Public visitor API: stateless, cross-origin. Deliberately NOT in the 'web'
+// group (no session, no CSRF). Registered before the admin group.
+Route::group([
+    'middleware' => ['bindings', \Modules\WordPressChat\Http\Middleware\ResolveSite::class, \Modules\WordPressChat\Http\Middleware\Cors::class],
+    'prefix'     => \Helper::getSubdirectory(),
+    'namespace'  => 'Modules\WordPressChat\Http\Controllers\Api',
+], function () {
+    $site = '[a-f0-9]{32}';
+    Route::post('/wordpress-chat/api/v1/sites/{site}/messages', 'ChatController@send')->name('wordpresschat.api.send')->where('site', $site);
+    Route::get('/wordpress-chat/api/v1/sites/{site}/messages', 'ChatController@index')->name('wordpresschat.api.index')->where('site', $site);
+    Route::post('/wordpress-chat/api/v1/sites/{site}/seen', 'ChatController@seen')->name('wordpresschat.api.seen')->where('site', $site);
+    // Preflight: Cors short-circuits OPTIONS with 204 before the closure runs.
+    Route::options('/wordpress-chat/api/v1/sites/{site}/{any}', function () {
+        return response('', 204);
+    })->where(['site' => $site, 'any' => '.*']);
+});
+
 Route::group([
     'middleware' => ['web', 'auth'],
     'prefix'     => \Helper::getSubdirectory(),
