@@ -260,6 +260,27 @@ class ContinueLinkTest extends TestCase
             ->assertStatus(410)->assertExactJson(['error' => 'link_invalid']);
     }
 
+    public function test_new_browser_retry_after_a_lost_answer_gets_200_with_its_token()
+    {
+        $site = $this->makeSite();
+        $link = $this->mint($this->startChat($site)['conversation']);
+
+        $new = $this->newChatToken();
+        $first = $this->api('POST', $site, '/continue', null, ['link' => $link, 'new_token' => $new]);
+        $first->assertStatus(200);
+        $sessions = Session::count();
+
+        $retry = $this->api('POST', $site, '/continue', null, ['link' => $link, 'new_token' => $new]);
+        $retry->assertStatus(200);
+        $this->assertSame($new, $retry->json()['token']);
+        $this->assertSame($first->json()['conversation']['key'], $retry->json()['conversation']['key']);
+        $this->assertSame($sessions, Session::count());
+
+        $this->api('POST', $site, '/continue', null, ['link' => $link, 'new_token' => $this->newChatToken()])
+            ->assertStatus(410)->assertExactJson(['error' => 'link_invalid']);
+        $this->assertSame($sessions, Session::count());
+    }
+
     public function test_new_browser_redeems_and_sees_full_history()
     {
         $site = $this->makeSite();

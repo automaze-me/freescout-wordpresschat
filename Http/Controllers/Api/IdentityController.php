@@ -128,9 +128,19 @@ class IdentityController extends Controller
 
         if (!ContinueLink::find($site, $link)) {
             // A retry after a lost answer: the link is used, by this very
-            // session. Answer as the first redemption did, write nothing.
-            if ($session && ContinueLink::usedBy($site, $link, $session)) {
-                return response()->json(Visibility::status($session->fresh() ?: $session));
+            // browser. Answer as the first redemption did, write nothing.
+            // A new browser is recognised by its new_token (read only: no
+            // session is created for a token the server has never seen).
+            $retrying = $session;
+            if (!$retrying && $newToken !== null) {
+                $retrying = Session::where('token_hash', hash('sha256', $newToken))
+                    ->where('site_id', $site->id)->first();
+            }
+
+            if ($retrying && ContinueLink::usedBy($site, $link, $retrying)) {
+                $payload = $newToken !== null ? ['token' => $newToken] : [];
+
+                return response()->json($payload + Visibility::status($retrying->fresh() ?: $retrying));
             }
 
             return $this->linkInvalid();
