@@ -5,6 +5,7 @@ namespace Modules\WordPressChat\Providers;
 use Illuminate\Support\ServiceProvider;
 use Modules\WordPressChat\Console\SendDueEmails;
 use Modules\WordPressChat\Listeners\PublishReplyToChat;
+use Modules\WordPressChat\Listeners\RouteReplyChannel;
 use Modules\WordPressChat\Listeners\RecordCustomerEmail;
 use Modules\WordPressChat\Services\ConversationHeader;
 use Modules\WordPressChat\Services\FailureLineItem;
@@ -118,6 +119,11 @@ class WordPressChatServiceProvider extends ServiceProvider
         // After core's undo window, mark the newest agent reply as published
         // so the widget's poll may show it.
         \Eventy::addAction('chat_conversation.send_reply', [new PublishReplyToChat(), 'handle'], 20, 3);
+
+        // The agent's "send by email" choice: captured when the reply is
+        // saved, routed when core sends it.
+        \Eventy::addAction('thread.before_save_from_request', [RouteReplyChannel::class, 'capture'], 20, 2);
+        \Eventy::addFilter('conversation.skip_send_reply_to_customer', [RouteReplyChannel::class, 'intercept'], 20, 3);
 
         // A customer's email in a chat conversation cuts off unverified browsers.
         \Eventy::addAction('conversation.customer_replied', [new RecordCustomerEmail(), 'handle'], 20, 3);
