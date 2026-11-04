@@ -54,9 +54,9 @@ class IdentityPayload
     /**
      * An order token's payload as ['num' => string, 'found' => bool,
      * 'email' => ?string, 'name' => string], or null. A found order must
-     * carry a valid email, unless it carries none at all (an order without
-     * a billing email): then `email` is null and the order counts as not
-     * found. A not-found order's email is dropped.
+     * carry a valid email; null, '' or an invalid one makes the payload
+     * malformed (WordPress reports an order without a billing email as not
+     * found). A not-found order's email is dropped.
      */
     public static function order(Site $site, $token, string $bindHash): ?array
     {
@@ -92,10 +92,10 @@ class IdentityPayload
             return null;
         }
 
-        if (!$found || $email === null || $email === '') {
+        if (!$found) {
             $email = null;
         } else {
-            $email = self::cleanEmail($email);
+            $email = $email === null ? null : self::cleanEmail($email);
 
             if ($email === null) {
                 return null;

@@ -54,9 +54,8 @@ class VisitorIdentity
 
     /**
      * An order number, as resolved by WordPress (IdentityPayload::order()).
-     * A found order with a billing email links its customer at level ORDER;
-     * anything else only writes "not found" and leaves the identity as it
-     * is. Like a typed email, only from ANONYMOUS, and session-level only
+     * A found order links its billing customer at level ORDER; an order
+     * not found only writes "not found" and leaves the identity as it is. Like a typed email, only from ANONYMOUS, and session-level only
      * without a visible conversation.
      *
      * @throws AlreadyIdentifiedException
@@ -70,7 +69,7 @@ class VisitorIdentity
             $number = (string) $payload['num'];
             $email = (string) ($payload['email'] ?? '');
 
-            if (empty($payload['found']) || $email === '') {
+            if (empty($payload['found'])) {
                 if ($conversation) {
                     IdentityLineItem::create($conversation, __('Order number :number not found', ['number' => $number]));
                 }

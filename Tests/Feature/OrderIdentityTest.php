@@ -69,21 +69,21 @@ class OrderIdentityTest extends TestCase
         $chat = $this->startChat($site);
         $customers = Customer::count();
 
+        $response = $this->order($site, $chat['token'], $this->orderToken($site, $chat['token'], ['found' => false, 'email' => null, 'name' => null]));
+        $response->assertStatus(200);
+        $this->assertSame(['level' => 'anonymous', 'account' => false], $response->json()['identity']);
+
+        // Ruling 3: a found order without a valid email is malformed, never
+        // a "not found" (WordPress sends found: false for such orders).
         foreach ([
-            ['found' => false, 'email' => null, 'name' => null],
             ['found' => true, 'email' => null, 'name' => null, 'num' => '10483'],
             ['found' => true, 'email' => '', 'name' => 'Nobody', 'num' => '10484'],
         ] as $over) {
-            $response = $this->order($site, $chat['token'], $this->orderToken($site, $chat['token'], $over));
-            $response->assertStatus(200);
-            $this->assertSame(['level' => 'anonymous', 'account' => false], $response->json()['identity']);
+            $this->order($site, $chat['token'], $this->orderToken($site, $chat['token'], $over))
+                ->assertStatus(403)->assertExactJson(['error' => 'identity_rejected']);
         }
 
-        $this->assertSame([
-            'Order number 10482 not found',
-            'Order number 10483 not found',
-            'Order number 10484 not found',
-        ], $this->lineItems($chat['conversation']));
+        $this->assertSame(['Order number 10482 not found'], $this->lineItems($chat['conversation']));
 
         $session = $chat['session']->fresh();
         $this->assertSame(Session::IDENTITY_NONE, (int) $session->identity);
