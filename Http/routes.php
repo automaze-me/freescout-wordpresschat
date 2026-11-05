@@ -4,7 +4,7 @@
 // group (no session, no CSRF). Registered before the admin group. Throttle
 // comes after Cors, so its 429 carries the CORS headers.
 Route::group([
-    'middleware' => ['bindings', \Modules\WordPressChat\Http\Middleware\ResolveSite::class, \Modules\WordPressChat\Http\Middleware\Cors::class, \Modules\WordPressChat\Http\Middleware\Throttle::class],
+    'middleware' => ['bindings', \Modules\WordPressChat\Http\Middleware\ResolveSite::class, \Modules\WordPressChat\Http\Middleware\Cors::class, \Modules\WordPressChat\Http\Middleware\RequireSchema::class, \Modules\WordPressChat\Http\Middleware\Throttle::class],
     'prefix'     => \Helper::getSubdirectory(),
     'namespace'  => 'Modules\WordPressChat\Http\Controllers\Api',
 ], function () {

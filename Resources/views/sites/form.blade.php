@@ -6,6 +6,7 @@
 <div class="section-heading">{{ $site->id ? __('Edit Website') : __('Add Website') }}</div>
 
 @include('partials/flash_messages')
+@include('wordpresschat::schema_notice')
 
 <div class="row-container form-container">
     <div class="row">

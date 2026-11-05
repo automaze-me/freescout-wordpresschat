@@ -178,4 +178,64 @@ class SitesAdminTest extends TestCase
         $html = $this->actingAs($admin)->get("/wordpress-chat/sites/{$site->id}/edit")->getContent();
         $this->assertStringContainsString('Empty means 120 seconds.', $html);
     }
+
+    public function test_menu_is_active_on_site_pages()
+    {
+        $admin = $this->adminUser();
+        $site  = $this->adminSite();
+
+        foreach (['/wordpress-chat/sites', '/wordpress-chat/sites/create', "/wordpress-chat/sites/{$site->id}/edit"] as $url) {
+            $html = $this->actingAs($admin)->get($url)->assertStatus(200)->getContent();
+            $this->assertMatchesRegularExpression('/<li class=" *active *">\s*<a href="[^"]*wordpress-chat\/sites">/', $html, $url);
+        }
+
+        $html = $this->actingAs($admin)->get('/')->getContent();
+        $this->assertDoesNotMatchRegularExpression('/<li class=" *active *">\s*<a href="[^"]*wordpress-chat\/sites">/', $html);
+    }
+
+    public function test_failed_update_keeps_the_site_and_shows_errors()
+    {
+        $admin = $this->adminUser();
+        $site  = $this->adminSite();
+        $edit  = "/wordpress-chat/sites/{$site->id}/edit";
+
+        $this->actingAs($admin)->from($edit)->post("/wordpress-chat/sites/{$site->id}", [
+            'name'       => 'Broken',
+            'url'        => 'example.com',
+            'mailbox_id' => $site->mailbox_id,
+        ])->assertRedirect($edit)->assertSessionHasErrors('url');
+
+        $fresh = $site->fresh();
+        $this->assertSame('Shop', $fresh->name);
+        $this->assertSame('https://shop.example.com', $fresh->origin);
+
+        $html = $this->actingAs($admin)->get($edit)->getContent();
+        $this->assertStringContainsString('has-error', $html);
+        $this->assertStringContainsString('Enter the website', $html);
+        $this->assertStringContainsString('Broken', $html);
+    }
+
+    public function test_store_update_and_regenerate_redirect_to_the_right_pages()
+    {
+        $admin = $this->adminUser();
+
+        $this->actingAs($admin)->post('/wordpress-chat/sites', [
+            'name' => 'Shop', 'url' => 'https://new.example.com', 'mailbox_id' => $this->testMailbox()->id,
+        ]);
+        $created = Site::where('origin', 'https://new.example.com')->firstOrFail();
+        $edit = url("/wordpress-chat/sites/{$created->id}/edit");
+
+        $this->actingAs($admin)->post('/wordpress-chat/sites', [
+            'name' => 'Shop', 'url' => 'https://new2.example.com', 'mailbox_id' => $created->mailbox_id,
+        ])->assertRedirect(url('/wordpress-chat/sites/'.Site::where('origin', 'https://new2.example.com')->first()->id.'/edit'));
+
+        $this->actingAs($admin)->post("/wordpress-chat/sites/{$created->id}", [
+            'name' => 'Shop 2', 'url' => 'https://new.example.com', 'mailbox_id' => $created->mailbox_id,
+        ])->assertRedirect($edit);
+
+        $this->actingAs($admin)->post("/wordpress-chat/sites/{$created->id}/secret")->assertRedirect($edit);
+
+        $this->actingAs($admin)->post("/wordpress-chat/sites/{$created->id}/delete")
+            ->assertRedirect(url('/wordpress-chat/sites'));
+    }
 }

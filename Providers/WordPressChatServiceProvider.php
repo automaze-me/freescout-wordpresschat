@@ -126,6 +126,11 @@ class WordPressChatServiceProvider extends ServiceProvider
             }
         });
 
+        // System -> Status: the production checks software can see.
+        \Eventy::addAction('system.status.after_info_table', function () {
+            echo view('wordpresschat::system_status', ['rows' => \Modules\WordPressChat\Services\SystemChecks::rows()])->render();
+        });
+
         // Make the website chat selectable as a communication channel.
         \Eventy::addFilter('channels.list', function ($channels) {
             $channels[WordPressChat::CHANNEL] = WordPressChat::channelName();
