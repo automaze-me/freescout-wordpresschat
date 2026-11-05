@@ -72,11 +72,15 @@ class SchemaGuard
 
         // A migrations table that can't be read (missing, database down)
         // is "not ok", never an exception: the API answers 503, not 500.
+        // The reason goes to the log; a database error names the query or
+        // the host, never a password.
         try {
             if (self::pending()) {
                 return false;
             }
         } catch (\Throwable $e) {
+            \Log::warning('WordPressChat: the migrations table could not be read, so the chat answers 503 maintenance: '.$e->getMessage());
+
             return false;
         }
 

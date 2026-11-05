@@ -54,7 +54,10 @@ class Site extends Model
      * itself is deleted: their sessions, the sessions' Access rows and the
      * site's continue links. Message rows lose their session_id. The
      * conversations, their states and message rows stay, so agents keep the
-     * history.
+     * history; the states' site_id becomes 0 ("no site", see
+     * ConversationState::of()). Otherwise a site that later gets the same
+     * id (MySQL <= 5.7 and MariaDB < 10.2.4 reset AUTO_INCREMENT on a
+     * restart) would find the deleted site's account chats.
      *
      * Identity token uses (jti rows) carry no site, so they cannot be told
      * apart; they hold no visitor data and IdentityToken purges them a day
@@ -90,6 +93,9 @@ class Site extends Model
         } while ($count > 0);
 
         Link::where('site_id', $siteId)->delete();
+
+        // toBase(): no updated_at, so no state looks touched.
+        ConversationState::where('site_id', $siteId)->toBase()->update(['site_id' => 0]);
     }
 
     public function mailbox()

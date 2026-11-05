@@ -20,7 +20,14 @@ a link that reopens the chat.
   that queue.
 - The PHP `pcntl` extension is recommended. Queue jobs have a timeout, and PHP can only enforce it
   with `pcntl`. System → Status shows whether it is available.
+- The PHP `intl` extension, for website addresses with international domain names (for example
+  `https://www.bücher.example`). Without it, such an address is refused when you add the website.
 - MySQL/MariaDB or PostgreSQL.
+- FreeScout must see each visitor's own IP address, or the per-IP [abuse limits](#abuse-limits)
+  apply to all visitors together. Behind a reverse proxy or CDN, set `APP_TRUSTED_PROXIES` in
+  FreeScout's `.env` to the proxy's addresses, and only those. Avoid container port forwarding that
+  rewrites the source address, or put a proxy in front of it that passes the client address on.
+  Check the "Client address" row in System → Status.
 
 ## Installation
 
@@ -42,8 +49,9 @@ a link that reopens the chat.
    Tools → Migrate DB** instead.
 4. Restart the queue workers so they load the module: `php artisan queue:restart`.
 
-Until the migrations have run, the chat API answers `503 maintenance` and administrators see a
-notice to open System → Tools and click Migrate DB.
+Until the migrations have run, the chat API answers `503 maintenance` with `Retry-After: 300`,
+**Manage → Website Chat** shows only a notice to open System → Tools and click Migrate DB, and the
+hourly cleanup does nothing.
 
 ## Updating
 
@@ -78,8 +86,8 @@ The secret is what lets the plugin vouch for logged-in WordPress users and order
 leave it out, visitors can still chat, but they are not recognised. Regenerating the secret in
 FreeScout stops the plugin until you enter the new one.
 
-**System → Status** has a "Website Chat" block that checks the database, `pcntl`, WebP support
-and the upload limits.
+**System → Status** has a "Website Chat" block that checks the database, `pcntl`, WebP support,
+the upload limits and the client address FreeScout sees.
 
 ## How replies reach visitors
 
@@ -132,6 +140,22 @@ polls, so leave room for that in any rate limiting you do in the web server or a
 A message that fills in the hidden `hp` field is refused as a bot and not stored.
 
 Visitors behind one shared IP address (an office, a mobile carrier) share the per-IP limits.
+
+The per-IP limits need FreeScout to see each visitor's own address. Otherwise every visitor seems
+to come from the same address, and a few busy visitors lock out everyone else.
+
+- **Reverse proxy or CDN:** set `APP_TRUSTED_PROXIES` in FreeScout's `.env` to the proxy's
+  addresses (comma-separated), and only those, then run `php artisan config:clear`. Never use `*`
+  on a FreeScout that can also be reached directly: it trusts the `X-Forwarded-For` header of any
+  client, so anyone could pretend to come from any address.
+- **Containers:** port forwarding that rewrites the source address has the same effect. Rootless
+  Podman with slirp4netns and the rootlesskit port handler does this: FreeScout then sees
+  `10.0.2.100` for everyone. Use port forwarding that keeps the client address, or put a proxy in
+  front that passes it on (and trust that proxy as above).
+
+To check, open **System → Status** from outside your network. The "Client address" row shows the
+address FreeScout sees for your own request and warns when it is a private address or when a
+proxy's `X-Forwarded-For` header is ignored.
 
 ## Origin check limits
 

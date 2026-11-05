@@ -207,6 +207,62 @@ class SessionHygieneTest extends TestCase
         $this->assertNull(Session::find($another->id));
     }
 
+    /**
+     * Final review M4: one purge failing doesn't stop the other; the
+     * failure is logged and the command exits with 1.
+     */
+    public function test_cleanup_runs_each_purge_even_when_the_other_fails()
+    {
+        $site = $this->makeSite();
+        $kernel = $this->app[\Illuminate\Contracts\Console\Kernel::class];
+        $expiredBucket = function () {
+            $bucket = hash('sha256', random_bytes(16));
+            \DB::table('wordpresschat_rate_limits')->insert([
+                'bucket'     => $bucket,
+                'hits'       => 1,
+                'expires_at' => now()->subHour()->format('Y-m-d H:i:s'),
+            ]);
+
+            return $bucket;
+        };
+
+        // The rate-limit purge fails: the orphan sessions still go.
+        $orphan = VisitorAuth::claim($site, $this->newChatToken());
+        $this->backdate($orphan, 25);
+        $kernel->registerCommand(new class() extends \Modules\WordPressChat\Console\Cleanup {
+            protected function purgeRateLimits(): int
+            {
+                throw new \RuntimeException('rate limits broke');
+            }
+        });
+        \Log::spy();
+
+        $this->assertSame(1, \Artisan::call('wordpresschat:cleanup'));
+        $output = \Artisan::output();
+        $this->assertMatchesRegularExpression('/Orphan sessions deleted: [1-9]\d*/', $output);
+        $this->assertNull(Session::find($orphan->id));
+        \Log::shouldHaveReceived('error')->once()->withArgs(function ($message) {
+            return strpos($message, 'WordPressChat: ') === 0 && strpos($message, 'rate limits broke') !== false;
+        });
+
+        // The orphan purge fails: the expired counters still go.
+        $bucket = $expiredBucket();
+        $kernel->registerCommand(new class() extends \Modules\WordPressChat\Console\Cleanup {
+            protected function purgeOrphanSessions(): int
+            {
+                throw new \RuntimeException('sessions broke');
+            }
+        });
+
+        $this->assertSame(1, \Artisan::call('wordpresschat:cleanup'));
+        $output = \Artisan::output();
+        $this->assertMatchesRegularExpression('/Rate-limit counters deleted: [1-9]\d*/', $output);
+        $this->assertSame(0, \DB::table('wordpresschat_rate_limits')->where('bucket', $bucket)->count());
+        \Log::shouldHaveReceived('error')->withArgs(function ($message) {
+            return strpos($message, 'sessions broke') !== false;
+        });
+    }
+
     public function test_deleting_a_site_purges_visitor_data_and_keeps_conversations()
     {
         $site = $this->makeSite();
@@ -259,6 +315,72 @@ class SessionHygieneTest extends TestCase
         $this->assertSame(1, Access::where('session_id', $keep['session']->id)->count());
         $this->assertSame(1, Message::where('session_id', $keep['session']->id)->count());
         $this->assertNotNull(ContinueLink::find($other, $keepLink));
+    }
+
+    /**
+     * Final review I2: MySQL <= 5.7 and MariaDB < 10.2.4 reset
+     * AUTO_INCREMENT to max(id) + 1 on a restart, so a site added after the
+     * newest one was deleted can get its id. The deleted site's account
+     * chats must not become the new site's.
+     */
+    public function test_a_new_site_that_reuses_a_deleted_sites_id_inherits_no_account_chats()
+    {
+        $site = $this->makeSite();
+        $new = $this->newChatToken();
+        $old = $this->startChat($site, 'From my account', [
+            'new_token'   => $new,
+            'login_token' => $this->loginToken($site, $new),
+        ]);
+        $oldConversationId = (int) $old['conversation']->id;
+        $state = ConversationState::where('conversation_id', $oldConversationId)->firstOrFail();
+        $this->assertSame(42, (int) $state->wp_user_id);
+        $this->assertTrue(VisitorIdentity::hasAccountChats((int) $site->id, 42));
+
+        $oldId = (int) $site->id;
+        $this->actingAs($this->adminUser())->post("/wordpress-chat/sites/{$oldId}/delete")
+            ->assertRedirect(route('wordpresschat.sites.index'));
+
+        // The state stays (agents keep the history) but names no site.
+        $this->assertSame(0, (int) $state->fresh()->site_id);
+        $this->assertSame(42, (int) $state->fresh()->wp_user_id);
+
+        // A new site with the old id.
+        $reused = new Site([
+            'name'       => 'New shop',
+            'url'        => 'https://new-shop.test/',
+            'origin'     => 'https://new-shop.test',
+            'mailbox_id' => $this->testMailbox()->id,
+            'public_id'  => bin2hex(random_bytes(16)),
+        ]);
+        $reused->id = $oldId;
+        $reused->setSecret('s2');
+        $reused->save();
+        $this->assertSame($oldId, (int) Site::where('public_id', $reused->public_id)->value('id'));
+
+        $this->assertFalse(VisitorIdentity::hasAccountChats($oldId, 42));
+
+        // Discovery: WordPress user 42 of the new site has no chats there.
+        $sessions = Session::count();
+        $device = $this->newChatToken();
+        $this->api('POST', $reused, '/identity', null, [
+            'login_token' => $this->loginToken($reused, $device),
+            'new_token'   => $device,
+        ])->assertStatus(200)->assertExactJson(['linked' => false, 'limits' => ['attachment_mb' => 10]]);
+        $this->assertSame($sessions, Session::count());
+
+        // A browser with a chat of its own logs in as user 42: it gets no
+        // Access row on the deleted site's conversation.
+        $chat = $this->startChat($reused, 'Hello from the new shop');
+        $this->api('POST', $reused, '/identity', $chat['token'], [
+            'login_token' => $this->loginToken($reused, $chat['token']),
+        ])->assertStatus(200);
+
+        $granted = Access::where('session_id', $chat['session']->id)->pluck('conversation_id')->map(function ($id) {
+            return (int) $id;
+        })->all();
+        $this->assertContains((int) $chat['conversation']->id, $granted);
+        $this->assertNotContains($oldConversationId, $granted);
+        $this->assertSame(0, Access::where('conversation_id', $oldConversationId)->count());
     }
 
     public function test_vanished_session_is_handled_not_500()

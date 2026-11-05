@@ -7,6 +7,7 @@ use App\Mailbox;
 use Illuminate\Http\Request;
 use Modules\WordPressChat\Entities\Site;
 use Modules\WordPressChat\Services\Origin;
+use Modules\WordPressChat\Services\SchemaGuard;
 
 class SitesController extends Controller
 {
@@ -17,9 +18,31 @@ class SitesController extends Controller
         }
     }
 
+    /**
+     * Null when the schema is complete. While a module migration is
+     * pending, the page that shows only the "needs a database update"
+     * notice, or for a write a redirect to it: the sites table may not
+     * exist yet (a first install whose migrations were skipped), and a
+     * newer column may be missing, so nothing reads or writes it.
+     */
+    protected function schemaPending(bool $write = false)
+    {
+        if (SchemaGuard::ok()) {
+            return null;
+        }
+
+        return $write
+            ? redirect()->route('wordpresschat.sites.index')
+            : view('wordpresschat::sites.schema');
+    }
+
     public function index()
     {
         $this->authorizeAdmin();
+
+        if ($pending = $this->schemaPending()) {
+            return $pending;
+        }
 
         return view('wordpresschat::sites.index', [
             'sites' => Site::with('mailbox')->orderBy('name')->get(),
@@ -29,6 +52,10 @@ class SitesController extends Controller
     public function create()
     {
         $this->authorizeAdmin();
+
+        if ($pending = $this->schemaPending()) {
+            return $pending;
+        }
 
         return view('wordpresschat::sites.form', [
             'site'      => new Site(['fallback_delay' => 120, 'max_attachment_mb' => 10]),
@@ -40,6 +67,10 @@ class SitesController extends Controller
     public function store(Request $request)
     {
         $this->authorizeAdmin();
+
+        if ($pending = $this->schemaPending(true)) {
+            return $pending;
+        }
 
         $data = $this->validated($request);
 
@@ -57,6 +88,10 @@ class SitesController extends Controller
     {
         $this->authorizeAdmin();
 
+        if ($pending = $this->schemaPending()) {
+            return $pending;
+        }
+
         $site = $this->findSite($id);
 
         // Null when the secret can't be decrypted (e.g. after an APP_KEY
@@ -72,6 +107,10 @@ class SitesController extends Controller
     {
         $this->authorizeAdmin();
 
+        if ($pending = $this->schemaPending(true)) {
+            return $pending;
+        }
+
         $site = $this->findSite($id);
         $site->fill($this->validated($request));
         $site->save();
@@ -84,6 +123,10 @@ class SitesController extends Controller
     public function destroy($id)
     {
         $this->authorizeAdmin();
+
+        if ($pending = $this->schemaPending(true)) {
+            return $pending;
+        }
 
         // The visitor data first: should it fail, the site is still there
         // and deleting it again finishes the job.
@@ -99,6 +142,10 @@ class SitesController extends Controller
     public function regenerateSecret($id)
     {
         $this->authorizeAdmin();
+
+        if ($pending = $this->schemaPending(true)) {
+            return $pending;
+        }
 
         $site = $this->findSite($id);
         $site->setSecret(self::newSecret());

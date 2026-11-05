@@ -151,6 +151,27 @@ class TranslationsTest extends TestCase
         $this->assertSame([], $problems, "Missing German translations:\n".implode("\n", $problems));
     }
 
+    /**
+     * A key that starts lowercase is a fragment for a :placeholder inside
+     * a sentence ("Email to the visitor failed: :reason"). German
+     * capitalizes nouns, so the fragment's German may start uppercase, but
+     * never with an article or pronoun, which only a sentence start would
+     * capitalize.
+     */
+    public function test_german_fragments_do_not_start_like_a_sentence()
+    {
+        $german = json_decode(file_get_contents($this->moduleRoot().'/Resources/lang/de.json'), true);
+
+        $problems = [];
+        foreach ($german as $key => $value) {
+            if (preg_match('/^[a-z]/', $key) && preg_match('/^(?:Der|Die|Das|Den|Dem|Des|Ein|Eine|Einen|Einem|Einer|Eines|Kein|Keine|Keinen|Keinem|Keiner|Es|Sie|Er)\b/u', $value)) {
+                $problems[] = $key.' => '.$value;
+            }
+        }
+
+        $this->assertSame([], $problems, "German fragments that start like a sentence:\n".implode("\n", $problems));
+    }
+
     public function test_german_has_no_dead_entries_and_keeps_placeholders()
     {
         $german = json_decode(file_get_contents($this->moduleRoot().'/Resources/lang/de.json'), true);
