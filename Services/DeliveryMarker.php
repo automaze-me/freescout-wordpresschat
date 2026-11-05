@@ -28,7 +28,8 @@ class DeliveryMarker
     public static function render($thread, $loop, $threads, $conversation, $mailbox): void
     {
         if ((int) $thread->type !== \App\Thread::TYPE_MESSAGE
-            || (int) $conversation->channel !== WordPressChat::CHANNEL) {
+            || !$conversation instanceof \App\Conversation
+            || !WordPressChat::isWebsiteChat($conversation)) {
             return;
         }
 

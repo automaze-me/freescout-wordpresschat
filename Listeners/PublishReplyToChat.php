@@ -27,7 +27,7 @@ class PublishReplyToChat
     {
         try {
             if (!$conversation instanceof Conversation
-                || (int) $conversation->channel !== WordPressChat::CHANNEL) {
+                || !WordPressChat::isWebsiteChat($conversation)) {
                 return;
             }
 
@@ -55,10 +55,11 @@ class PublishReplyToChat
             }
 
             // The conversation may have been merged meanwhile: use the
-            // thread's current conversation, not the snapshot.
+            // thread's current conversation, not the snapshot. A reply that
+            // now sits in an email conversation (a merge) has no chat.
             $current = Conversation::find($fresh->conversation_id);
 
-            if (!$current || (int) $current->channel !== WordPressChat::CHANNEL) {
+            if (!$current || !WordPressChat::isWebsiteChat($current)) {
                 return;
             }
 

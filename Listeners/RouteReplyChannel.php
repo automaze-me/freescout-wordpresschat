@@ -41,9 +41,7 @@ class RouteReplyChannel
 
         $conversation = Conversation::find($thread->conversation_id);
 
-        if (!$conversation
-            || (int) $conversation->channel !== WordPressChat::CHANNEL
-            || !$conversation->isChat()) {
+        if (!$conversation || !WordPressChat::isWebsiteChat($conversation)) {
             return;
         }
 
@@ -67,9 +65,7 @@ class RouteReplyChannel
      */
     public static function intercept($skip, Conversation $conversation, $replies)
     {
-        if ($skip
-            || (int) $conversation->channel !== WordPressChat::CHANNEL
-            || !$conversation->isChat()) {
+        if ($skip || !WordPressChat::isWebsiteChat($conversation)) {
             return $skip;
         }
 
@@ -101,6 +97,9 @@ class RouteReplyChannel
         $message->direction = Message::DIRECTION_OUT;
         $message->via = Message::VIA_EMAIL;
         $message->session_id = null;
+        // Hidden from every browser until the email went out: markSent()
+        // publishes it then, so a verified browser never shows a reply that
+        // failed or is still waiting as if it had been sent (spec §6.4 rule 7).
         $message->published_at = null;
         $message->fallback_due_at = null;
         $message->seen_at = null;

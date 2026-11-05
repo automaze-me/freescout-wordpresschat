@@ -28,6 +28,9 @@ use Modules\WordPressChat\WordPressChat;
  * `Auto-Submitted: auto-replied` (Postfix, Exim, Gmail), which makes core's
  * isAutoResponder() true for it as well.
  *
+ * Website chats only (WordPressChat::isWebsiteChat()): core's forward keeps
+ * the channel on its copy, an email conversation with no chat to cut off.
+ *
  * Core itself never threads a bounce it detected into the conversation it
  * bounced from (FetchEmails skips its reply lookup for bounces), so in core
  * the bounce branch here only runs when another module routes a bounce in.
@@ -47,7 +50,7 @@ class RecordCustomerEmail
     {
         try {
             if (!$conversation instanceof Conversation
-                || (int) $conversation->channel !== WordPressChat::CHANNEL
+                || !WordPressChat::isWebsiteChat($conversation)
                 || !$thread instanceof Thread
                 || (int) $thread->type !== Thread::TYPE_CUSTOMER
                 || (int) $thread->state !== Thread::STATE_PUBLISHED

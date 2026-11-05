@@ -6,6 +6,7 @@ use Illuminate\Support\ServiceProvider;
 use Modules\WordPressChat\Console\Cleanup;
 use Modules\WordPressChat\Console\SendDueEmails;
 use Modules\WordPressChat\Http\Middleware\OversizedUpload;
+use Modules\WordPressChat\Listeners\MergeChat;
 use Modules\WordPressChat\Listeners\PublishReplyToChat;
 use Modules\WordPressChat\Listeners\RouteReplyChannel;
 use Modules\WordPressChat\Listeners\RecordBounce;
@@ -146,7 +147,7 @@ class WordPressChatServiceProvider extends ServiceProvider
         // the choice into the form on submit. Chat conversations only: core's
         // forward keeps the channel on its email copy.
         \Eventy::addAction('reply_form.after', function ($conversation) {
-            if ((int) $conversation->channel !== WordPressChat::CHANNEL || !$conversation->isChat()) {
+            if (!WordPressChat::isWebsiteChat($conversation)) {
                 return;
             }
 
@@ -186,6 +187,9 @@ class WordPressChatServiceProvider extends ServiceProvider
 
         // A customer's email in a chat conversation cuts off unverified browsers.
         \Eventy::addAction('conversation.customer_replied', [new RecordCustomerEmail(), 'handle'], 20, 3);
+
+        // A merged chat's undelivered replies fail visibly in the target.
+        \Eventy::addAction('conversation.merged', [MergeChat::class, 'handle'], 20, 3);
 
         // A bounce of one of our emails: core logs it on the bounced reply.
         \App\SendLog::created(function ($log) {

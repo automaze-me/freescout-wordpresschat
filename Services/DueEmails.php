@@ -33,6 +33,15 @@ class DueEmails
      */
     const STALE_SENDING = 600;
 
+    /**
+     * Seconds after which a batch still "queued" has lost its job (a
+     * flushed or rebuilt queue, a worker that died before the claim and
+     * never reached failed()). Far above the longest wait of a live job:
+     * the undo delay of an email choice, and the 3600 s backoff before a
+     * retry (SendChatEmail::BACKOFF).
+     */
+    const STALE_QUEUED = 10800;
+
     /** Seconds a runnable job may wait before the queue counts as backed up (markLost()). */
     const BACKLOG_AGE = 600;
 
@@ -172,45 +181,40 @@ class DueEmails
     }
 
     /**
-     * Batches a dead worker left in "sending" (the job's timeout, an
+     * Batches whose worker or job is gone. Returns the number of batches
+     * resolved.
+     *
+     * "sending" for STALE_SENDING: a dead worker (the job's timeout, an
      * out-of-memory fatal in core's IMAP copy, a restart). Core's send
      * status on the batch's newest thread, its last_thread, tells whether
      * the email went out: then the rows are sent; otherwise the batch
      * fails with one red line item. Never queued again: a kill after the
      * transport handoff would send the email twice.
      *
-     * The claim stamps updated_at (Eloquent's update() does). A batch is
-     * handled once every row of it is stale: a "seen" stamps a row too,
-     * and handling part of a batch would give it two line items.
+     * "queued" for STALE_QUEUED: the job was lost before its claim. As in
+     * the job's failed() hook, rows that need no email leave the batch
+     * first; the rest fail with one red line item. A late job then claims
+     * nothing, so the email is never sent after the agent was told it
+     * failed.
      *
-     * Returns the number of batches resolved.
+     * The claim and every retry stamp updated_at (Eloquent's update()
+     * does). A batch is handled once every row of it is stale: a "seen"
+     * stamps a row too, and handling part of a batch would give it two
+     * line items.
      */
     public static function resolveStale(?Carbon $now = null): int
     {
-        $cutoff = ($now ? $now->copy() : now())->subSeconds(self::STALE_SENDING);
+        $now = $now ? $now->copy() : now();
 
-        $keys = Message::where('email_status', Message::EMAIL_SENDING)
-            ->whereNotNull('email_thread_id')
-            ->where('updated_at', '<', $cutoff)
-            ->distinct()
-            ->pluck('email_thread_id')
-            ->all();
+        return self::resolveSending($now->copy()->subSeconds(self::STALE_SENDING))
+            + self::resolveQueued($now->copy()->subSeconds(self::STALE_QUEUED));
+    }
 
+    private static function resolveSending(Carbon $cutoff): int
+    {
         $resolved = 0;
 
-        foreach ($keys as $key) {
-            $rows = Message::where('email_thread_id', $key)
-                ->where('email_status', Message::EMAIL_SENDING)
-                ->get(['id', 'conversation_id', 'updated_at']);
-
-            $recent = $rows->contains(function ($row) use ($cutoff) {
-                return $row->updated_at && $row->updated_at->gte($cutoff);
-            });
-
-            if ($rows->isEmpty() || $recent) {
-                continue;
-            }
-
+        foreach (self::staleBatches(Message::EMAIL_SENDING, $cutoff) as $rows) {
             $ids = array_map('intval', $rows->pluck('id')->all());
             $newest = SendChatEmail::newestThread(SendChatEmail::threadIdsOf($ids));
 
@@ -236,6 +240,71 @@ class DueEmails
         }
 
         return $resolved;
+    }
+
+    private static function resolveQueued(Carbon $cutoff): int
+    {
+        $resolved = 0;
+
+        foreach (self::staleBatches(Message::EMAIL_QUEUED, $cutoff) as $key => $rows) {
+            SendChatEmail::drop($key);
+
+            $ids = array_map('intval', Message::whereIn('id', $rows->pluck('id')->all())
+                ->where('email_status', Message::EMAIL_QUEUED)
+                ->pluck('id')
+                ->all());
+
+            if (!$ids) {
+                continue;
+            }
+
+            $newest = SendChatEmail::newestThread(SendChatEmail::threadIdsOf($ids));
+            $conversation = $newest ? Conversation::find($newest->conversation_id) : null;
+
+            if (SendChatEmail::failBatch(
+                $ids,
+                Message::EMAIL_QUEUED,
+                $conversation,
+                (int) $rows->first()->conversation_id,
+                __('the email job was lost')
+            )) {
+                $resolved++;
+            }
+        }
+
+        return $resolved;
+    }
+
+    /**
+     * The batches in $status whose rows in that status were all last
+     * touched before $cutoff: batch key (email_thread_id) => those rows.
+     */
+    private static function staleBatches(int $status, Carbon $cutoff): array
+    {
+        $keys = Message::where('email_status', $status)
+            ->whereNotNull('email_thread_id')
+            ->where('updated_at', '<', $cutoff)
+            ->distinct()
+            ->pluck('email_thread_id')
+            ->all();
+
+        $batches = [];
+
+        foreach ($keys as $key) {
+            $rows = Message::where('email_thread_id', $key)
+                ->where('email_status', $status)
+                ->get(['id', 'conversation_id', 'updated_at']);
+
+            $recent = $rows->contains(function ($row) use ($cutoff) {
+                return $row->updated_at && $row->updated_at->gte($cutoff);
+            });
+
+            if ($rows->isNotEmpty() && !$recent) {
+                $batches[(int) $key] = $rows;
+            }
+        }
+
+        return $batches;
     }
 
     /**

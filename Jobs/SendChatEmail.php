@@ -40,11 +40,13 @@ use Modules\WordPressChat\Services\FailureLineItem;
  * sends nothing: core returns early for a thread whose send_status says
  * accepted, and CoreReplyMailer reads that as sent.
  *
- * A dead worker: rows still queued are failed by failed(); rows left in
- * "sending" are resolved by DueEmails::resolveStale() from core's send
- * status, never sent again. The batch-outcome helpers below are shared
- * with both, so every path moves rows with the same conditional update
- * and a batch gets at most one red line item.
+ * A dead worker: rows still queued are failed by failed(), or by
+ * DueEmails::resolveStale() once they sat untouched for STALE_QUEUED (the
+ * job itself was lost); rows left in "sending" are resolved by
+ * resolveStale() from core's send status, never sent again. The
+ * batch-outcome helpers below are shared with both, so every path moves
+ * rows with the same conditional update and a batch gets at most one red
+ * line item. A job that runs after its rows failed claims nothing.
  */
 class SendChatEmail implements ShouldQueue
 {
@@ -75,7 +77,7 @@ class SendChatEmail implements ShouldQueue
 
     public function handle(CoreReplyMailer $mailer): void
     {
-        $this->drop();
+        self::drop($this->threadId);
 
         $ids = $this->claim();
 
@@ -89,12 +91,6 @@ class SendChatEmail implements ShouldQueue
         $newest = null;
 
         try {
-            // An email choice reaches the (verified) chat once it is sent.
-            Message::whereIn('id', $ids)
-                ->where('via', Message::VIA_EMAIL)
-                ->whereNull('published_at')
-                ->update(['published_at' => now()]);
-
             $threadIds = self::threadIdsOf($ids);
             $newest = self::newestThread($threadIds);
             $conversation = $newest ? Conversation::find($newest->conversation_id) : null;
@@ -142,7 +138,7 @@ class SendChatEmail implements ShouldQueue
      */
     public function failed($e = null): void
     {
-        $this->drop();
+        self::drop($this->threadId);
 
         $ids = array_map('intval', Message::where('email_thread_id', $this->threadId)
             ->where('email_status', Message::EMAIL_QUEUED)
@@ -197,22 +193,37 @@ class SendChatEmail implements ShouldQueue
             && ($thread->send_status == SendLog::STATUS_ACCEPTED || $thread->isSendStatusSuccess());
     }
 
-    /** sending -> sent. Returns the number of rows moved. */
+    /**
+     * sending -> sent. Returns the number of rows moved.
+     *
+     * An email choice reaches the (verified) chat only now, once its email
+     * went out (spec §6.4 rule 7): its published_at is set in the same
+     * statement that marks it sent, so it is never visible as sent before
+     * that, nor after a failure. Rows that already have one keep it.
+     */
     public static function markSent(array $ids): int
     {
-        return Message::whereIn('id', $ids)
+        $published = Message::whereIn('id', $ids)
+            ->where('email_status', Message::EMAIL_SENDING)
+            ->where('via', Message::VIA_EMAIL)
+            ->whereNull('published_at')
+            ->update(['email_status' => Message::EMAIL_SENT, 'published_at' => now()]);
+
+        return $published + Message::whereIn('id', $ids)
             ->where('email_status', Message::EMAIL_SENDING)
             ->update(['email_status' => Message::EMAIL_SENT]);
     }
 
     /**
-     * Step 1: queued rows that can no longer be sent leave the batch.
-     * Conditional on still being queued, so a row another job claimed
-     * meanwhile is never touched.
+     * Step 1: queued rows of the batch $threadId that can no longer be sent
+     * leave it, back to null. Conditional on still being queued, so a row
+     * another job claimed meanwhile is never touched. Also run before a
+     * queued batch is failed (failed(), DueEmails::resolveStale()), so a
+     * reply that needs no email is never reported as a failed one.
      */
-    private function drop(): void
+    public static function drop(int $threadId): void
     {
-        $queued = Message::where('email_thread_id', $this->threadId)
+        $queued = Message::where('email_thread_id', $threadId)
             ->where('email_status', Message::EMAIL_QUEUED)
             ->get(['id', 'thread_id', 'via', 'seen_at']);
 

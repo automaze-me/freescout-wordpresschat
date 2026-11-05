@@ -14,13 +14,14 @@ use Modules\WordPressChat\WordPressChat;
  * What agents see on a website-chat conversation, beside core's own channel
  * tag: the site name (several sites only), the identity badge and, for
  * order-only links, a warning; plus a "via email" chip on customer threads
- * that arrived by email.
+ * that arrived by email. Website chats only (WordPressChat::isWebsiteChat()):
+ * core's forward keeps the channel on its email copy.
  */
 class ConversationHeader
 {
     public static function render(Conversation $conversation): string
     {
-        if ((int) $conversation->channel !== WordPressChat::CHANNEL) {
+        if (!WordPressChat::isWebsiteChat($conversation)) {
             return '';
         }
 
@@ -51,8 +52,18 @@ class ConversationHeader
             ->where('via', Message::VIA_EMAIL)
             ->exists();
 
-        return $viaEmail
-            ? '<span class="label label-default wpc-via-email">'.e(__('via email')).'</span>'
-            : '';
+        // The conversation is read only for a thread that has the chip: an
+        // email thread merged into an email conversation needs none.
+        if (!$viaEmail) {
+            return '';
+        }
+
+        $conversation = Conversation::find($thread->conversation_id);
+
+        if (!$conversation || !WordPressChat::isWebsiteChat($conversation)) {
+            return '';
+        }
+
+        return '<span class="label label-default wpc-via-email">'.e(__('via email')).'</span>';
     }
 }
