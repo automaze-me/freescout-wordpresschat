@@ -7,7 +7,9 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * Fixed-window counters in `wordpresschat_rate_limits`, one row per
- * window: the bucket is hash(scope|key|window index). The counters live in
+ * window: the bucket is an HMAC-SHA256 of scope|key|window index, keyed with
+ * the app key, so a leaked table cannot be matched against guessed IP
+ * addresses. Rotating APP_KEY resets every counter. The counters live in
  * the database, so a limit holds across every PHP worker and app server.
  *
  * Every attempt counts, refused ones too: a client that keeps going past
@@ -25,7 +27,7 @@ class RateLimiter
     {
         $now = $now === null ? time() : $now;
 
-        return hash('sha256', $scope.'|'.$key.'|'.(int) floor($now / $window));
+        return hash_hmac('sha256', $scope.'|'.$key.'|'.(int) floor($now / $window), (string) config('app.key'));
     }
 
     /**

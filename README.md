@@ -120,7 +120,7 @@ that the file is too large.
 
 The chat API limits how often one visitor and one IP address can call it. The counters are kept
 in the database. A request over a limit gets `429` with a `Retry-After` header, and the widget
-shows "Too many messages in a short time". Every attempt counts, including refused ones.
+shows "Too many messages in a short time". Every attempt counts, including refused ones. When several limits refuse a request, `Retry-After` is the longest wait. Once an IP limit has refused a request, the per-token limits no longer count it.
 
 - **Starting a chat** (a message without a chat token): 10 per hour per IP address.
 - **Messages**: 20 per minute per chat token, and 60 per minute per IP address.
@@ -129,8 +129,8 @@ shows "Too many messages in a short time". Every attempt counts, including refus
   minutes per IP address.
 - **WordPress login handover**: 60 per 15 minutes per IP address.
 - **Continue links**: 10 per 15 minutes per IP address.
-- **Marking replies as seen**: 60 per minute per chat token.
-- **Attachment downloads**: 120 per minute per chat token.
+- **Marking replies as seen**: 60 per minute per chat token, and 180 per minute per IP address.
+- **Attachment downloads**: 120 per minute per chat token, and 360 per minute per IP address.
 - **Log out**: 30 per minute per IP address.
 - **Test connection** from the plugin: 10 per minute per IP address.
 
@@ -181,9 +181,9 @@ The module stores what a chat needs and little else:
 - the page path the visitor is on, so agents can see "On the site now" with the path. The query
   string and the fragment are never kept;
 - chat session tokens only as SHA-256 hashes;
-- rate-limit counters, which are keyed by SHA-256 hashes of the IP address (or the token) and
+- rate-limit counters, which are keyed by HMAC-SHA256 hashes (made with the app key) of the IP address (or the token) and
   are purged by the hourly cleanup once they have expired. IPv6 addresses are folded to their first 64 bits first.
-  The module stores no raw IP addresses.
+  The module stores no raw IP addresses. Rotating `APP_KEY` resets the counters.
 
 ## Channel code
 

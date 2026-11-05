@@ -209,6 +209,21 @@ abstract class TestCase extends CoreTestCase
         \DB::table('wordpresschat_rate_limits')->delete();
     }
 
+    /**
+     * Waits for the next window when fewer than $margin seconds of the
+     * current one are left, so that every request of the test lands in one
+     * window: a boundary in between would reset the counts and let a
+     * request through that the test expects refused.
+     */
+    protected function freshWindow(int $window, int $margin = 5): void
+    {
+        $left = $window - time() % $window;
+
+        if ($left < $margin) {
+            sleep($left);
+        }
+    }
+
     /** A chat token the way the widget makes one: 32 random bytes, base64url, no padding. */
     protected function newChatToken(): string
     {

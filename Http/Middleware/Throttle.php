@@ -22,7 +22,8 @@ class Throttle
      * seconds. A rule with `header` applies only with (true) or without
      * (false) an X-Chat-Token header; one with `fields` only when the body
      * has at least one of them. A `bytes` rule counts the uploaded file's
-     * size instead of 1.
+     * size instead of 1. IP rules always count; token rules count until an
+     * IP rule refuses (see handle()).
      */
     const RULES = [
         'wordpresschat.api.send' => [
@@ -41,10 +42,12 @@ class Throttle
             ['scope' => 'continue-ip', 'key' => 'ip', 'max' => 10, 'window' => 900],
         ],
         'wordpresschat.api.seen' => [
-            ['scope' => 'seen', 'key' => 'token', 'max' => 60, 'window' => 60],
+            ['scope' => 'seen',    'key' => 'token', 'max' => 60,  'window' => 60],
+            ['scope' => 'seen-ip', 'key' => 'ip',    'max' => 180, 'window' => 60],
         ],
         'wordpresschat.api.attachment' => [
-            ['scope' => 'download', 'key' => 'token', 'max' => 120, 'window' => 60],
+            ['scope' => 'download',    'key' => 'token', 'max' => 120, 'window' => 60],
+            ['scope' => 'download-ip', 'key' => 'ip',    'max' => 360, 'window' => 60],
         ],
         'wordpresschat.api.logout' => [
             ['scope' => 'logout-ip', 'key' => 'ip', 'max' => 30, 'window' => 60],
@@ -55,8 +58,11 @@ class Throttle
     ];
 
     /**
-     * Applies every matching rule, so each one counts the attempt even when
-     * an earlier one already refused it; the first refusal answers 429.
+     * Applies the matching rules, IP-keyed ones first. Those always count,
+     * refused attempts included. Token-keyed rules count only while no IP
+     * rule has refused, so a flood of random tokens from one address
+     * cannot fill the table with one row per request. A 429 carries the
+     * longest wait among the refusing rules.
      */
     public function handle($request, Closure $next)
     {
@@ -69,8 +75,25 @@ class Throttle
         }
 
         $retryAfter = null;
+        $ipRefused = false;
 
+        // IP rules first, each group in its listed order (usort is not
+        // stable before PHP 8).
+        $ipRules = [];
+        $tokenRules = [];
         foreach ($rules[$name] as $rule) {
+            if ($rule['key'] === 'ip') {
+                $ipRules[] = $rule;
+            } else {
+                $tokenRules[] = $rule;
+            }
+        }
+
+        foreach (array_merge($ipRules, $tokenRules) as $rule) {
+            if ($rule['key'] !== 'ip' && $ipRefused) {
+                continue;
+            }
+
             if (!self::applies($rule, $request)) {
                 continue;
             }
@@ -86,7 +109,11 @@ class Throttle
             $amount = empty($rule['bytes']) ? 1 : self::fileBytes($request);
             $retry = RateLimiter::hit($rule['scope'], $key, $rule['max'], $rule['window'], $amount);
 
-            if ($retry !== null && $retryAfter === null) {
+            if ($retry !== null && $rule['key'] === 'ip') {
+                $ipRefused = true;
+            }
+
+            if ($retry !== null && ($retryAfter === null || $retry > $retryAfter)) {
                 $retryAfter = $retry;
             }
         }

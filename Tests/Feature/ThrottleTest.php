@@ -251,18 +251,69 @@ class ThrottleTest extends TestCase
         }
     }
 
-    /**
-     * Waits for the next window when fewer than $margin seconds of the
-     * current one are left, so that every request of the test lands in one
-     * window: a boundary in between would reset the counts and let a
-     * request through that the test expects refused.
-     */
-    private function freshWindow(int $window, int $margin = 5): void
+    public function test_retry_after_is_the_longest_refusal()
     {
-        $left = $window - time() % $window;
+        $site = $this->makeSite();
+        $chat = $this->startChat($site);
+        $this->freshWindow(3600, 70);
 
-        if ($left < $margin) {
-            sleep($left);
+        $this->fillBucket('message', hash('sha256', $chat['token']), 60, 20);
+        $this->fillBucket('upload', hash('sha256', $chat['token']), 3600, 52428800);
+
+        $response = $this->upload($site, $chat['token'], $this->bigFile(1));
+
+        $response->assertStatus(429);
+        $retry = $response->json()['retry_after'];
+        $this->assertGreaterThan(60, $retry);
+        $this->assertSame((string) $retry, $response->headers->get('Retry-After'));
+    }
+
+    public function test_seen_and_download_have_per_ip_caps()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site);
+        $ip = '198.51.100.50';
+        $other = '198.51.100.51';
+
+        $this->fillBucket('seen-ip', $ip, 60, 180);
+        $this->api('POST', $site, '/seen', $chat['token'], ['message_ids' => [2147483647]], [], ['REMOTE_ADDR' => $ip])->assertStatus(429);
+        $this->api('POST', $site, '/seen', $chat['token'], ['message_ids' => [2147483647]], [], ['REMOTE_ADDR' => $other])->assertStatus(204);
+
+        $this->fillBucket('download-ip', $ip, 60, 360);
+        $this->api('GET', $site, '/attachments/1', $chat['token'], null, [], ['REMOTE_ADDR' => $ip])->assertStatus(429);
+        $this->assertNotSame(429, $this->api('GET', $site, '/attachments/1', $chat['token'], null, [], ['REMOTE_ADDR' => $other])->getStatusCode());
+    }
+
+    public function test_shared_ip_allows_three_browsers_reading()
+    {
+        $site = $this->makeSite();
+        $ip = ['REMOTE_ADDR' => '203.0.113.60'];
+        $chats = [];
+        for ($i = 0; $i < 3; $i++) {
+            $chats[] = $this->startChat($site, 'Hello', [], $ip);
         }
+        $this->freshWindow(60, 10);
+
+        for ($i = 1; $i <= 60; $i++) {
+            foreach ($chats as $chat) {
+                $this->api('POST', $site, '/seen', $chat['token'], ['message_ids' => [2147483647]], [], $ip)->assertStatus(204);
+            }
+        }
+
+        $this->api('POST', $site, '/seen', $chats[0]['token'], null, [], $ip)->assertStatus(429);
+    }
+
+    public function test_random_token_flood_is_bounded_by_the_ip_cap()
+    {
+        $site = $this->makeSite();
+        $ip = ['REMOTE_ADDR' => '203.0.113.70'];
+        $this->freshWindow(60);
+        $rows = DB::table('wordpresschat_rate_limits')->count();
+
+        for ($i = 0; $i < 100; $i++) {
+            $this->api('POST', $site, '/messages', $this->newChatToken(), $this->newMessage(), [], $ip);
+        }
+
+        $this->assertLessThanOrEqual(62, DB::table('wordpresschat_rate_limits')->count() - $rows);
     }
 }
