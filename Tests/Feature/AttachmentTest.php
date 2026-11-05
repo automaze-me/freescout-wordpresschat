@@ -10,7 +10,9 @@ use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Entities\Session;
 use Modules\WordPressChat\Entities\Site;
 use Modules\WordPressChat\Services\ChatAttachment;
+use Modules\WordPressChat\Services\ContinueLink;
 use Modules\WordPressChat\Services\InboundMessage;
+use Modules\WordPressChat\Services\Visibility;
 use Modules\WordPressChat\Tests\TestCase;
 
 /**
@@ -257,7 +259,7 @@ class AttachmentTest extends TestCase
             $r = $this->sendFile($site, $this->upload(base64_decode($base64), $name, $clientMime), ['text' => 'look']);
 
             $this->assertSame(422, $r->status(), $case);
-            $this->assertSame(['error' => 'validation', 'field' => 'file', 'reason' => 'type'], array_diff_key($r->json(), ['limits' => 1]), $case);
+            $this->assertSame(['error' => 'validation', 'field' => 'file', 'reason' => 'type', 'limits' => ['attachment_mb' => ChatAttachment::effectiveLimitMb($site)]], $r->json(), $case);
         }
 
         // Not even the session of a first message was written.
@@ -332,7 +334,7 @@ class AttachmentTest extends TestCase
             $r = $this->sendFile($site, $this->failedUpload($error), ['text' => 'with a file']);
 
             $this->assertSame(422, $r->status(), 'error '.$error);
-            $this->assertSame(['error' => 'validation', 'field' => 'file', 'reason' => $reason], array_diff_key($r->json(), ['limits' => 1]), 'error '.$error);
+            $this->assertSame(['error' => 'validation', 'field' => 'file', 'reason' => $reason, 'limits' => ['attachment_mb' => ChatAttachment::effectiveLimitMb($site)]], $r->json(), 'error '.$error);
         }
 
         // An empty file, and a `file` field that is no upload at all.
@@ -570,6 +572,149 @@ class AttachmentTest extends TestCase
             $this->assertStringStartsWith('attachment;', $d->headers->get('Content-Disposition'));
             $this->assertSame('nosniff', $d->headers->get('X-Content-Type-Options'));
         }
+    }
+
+    public function test_limits_are_the_same_everywhere()
+    {
+        $site = $this->makeSite(['max_attachment_mb' => 3]);
+        $expected = Visibility::limits($site);
+        $this->assertSame(['attachment_mb' => ChatAttachment::effectiveLimitMb($site)], $expected);
+
+        $chat = $this->startChat($site);
+        $this->assertSame($expected, $chat['response']->json()['limits']);
+
+        $bad = $this->sendFile($site, $this->upload(base64_decode(self::SVG), 'x.svg'), [], $chat['token']);
+        $bad->assertStatus(422);
+        $this->assertSame($expected, $bad->json()['limits']);
+
+        $new = $this->newChatToken();
+        $unlinked = $this->api('POST', $site, '/identity', null, [
+            'login_token' => $this->loginToken($site, $new, ['uid' => 987654]),
+            'new_token'   => $new,
+        ]);
+        $unlinked->assertStatus(200);
+        $this->assertFalse($unlinked->json()['linked']);
+        $this->assertSame($expected, $unlinked->json()['limits']);
+    }
+
+    public function test_subject_uses_the_stored_file_name()
+    {
+        $site = $this->makeSite();
+
+        $r = $this->sendFile($site, $this->upload(base64_decode(self::PNG), 'my photo #1.png', 'image/png'));
+
+        $r->assertStatus(201);
+        $attachment = Attachment::find($r->json()['message']['attachments'][0]['id']);
+        $conversation = Conversation::find(Message::find($r->json()['message']['id'])->conversation_id);
+        $this->assertSame($attachment->file_name, $conversation->subject);
+        $this->assertStringNotContainsString(' ', $conversation->subject);
+        $this->assertStringNotContainsString('#', $conversation->subject);
+    }
+
+    public function test_missing_file_on_disk_is_404_and_logged()
+    {
+        $site = $this->makeSite();
+        $r = $this->sendFile($site, $this->upload(base64_decode(self::PNG), 'photo.png', 'image/png'));
+        $token = $r->json()['token'];
+        $attachment = Attachment::find($r->json()['message']['attachments'][0]['id']);
+        Attachment::getDisk()->delete($attachment->getStorageFilePath());
+
+        $warnings = [];
+        \Event::listen(\Illuminate\Log\Events\MessageLogged::class, function ($event) use (&$warnings) {
+            if ($event->level === 'warning') {
+                $warnings[] = (string) $event->message;
+            }
+        });
+
+        $this->assertNotFound($this->download($site, $attachment->id, $token), 'file gone');
+
+        $named = array_filter($warnings, function ($m) use ($attachment) {
+            return strpos($m, '[WordPressChat]') !== false && strpos($m, '#'.$attachment->id) !== false;
+        });
+        $this->assertCount(1, $named);
+    }
+
+    public function test_draft_thread_attachment_is_404()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site, 'Hello');
+        $thread = $this->agentThread($chat['conversation']);
+        $file = $this->attach($thread, 'draft.pdf', 'application/pdf', base64_decode(self::PDF));
+        $this->download($site, $file->id, $chat['token'])->assertStatus(200);
+
+        $thread->state = Thread::STATE_DRAFT;
+        $thread->save();
+
+        $this->assertNotFound($this->download($site, $file->id, $chat['token']), 'draft thread with a row');
+    }
+
+    public function test_deleted_thread_attachment_is_404()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site, 'Hello');
+        $thread = $this->agentThread($chat['conversation']);
+        $file = $this->attach($thread, 'gone.pdf', 'application/pdf', base64_decode(self::PDF));
+        $this->download($site, $file->id, $chat['token'])->assertStatus(200);
+
+        $thread->delete();
+
+        $this->assertNotFound($this->download($site, $file->id, $chat['token']), 'deleted thread');
+    }
+
+    /** A published customer-email thread with a file and its via-email row. */
+    private function emailFile(Conversation $conversation): Attachment
+    {
+        $email = new Thread();
+        $email->conversation_id        = $conversation->id;
+        $email->type                   = Thread::TYPE_CUSTOMER;
+        $email->status                 = Thread::STATUS_ACTIVE;
+        $email->state                  = Thread::STATE_PUBLISHED;
+        $email->body                   = '<p>From the inbox</p>';
+        $email->source_type            = Thread::SOURCE_TYPE_EMAIL;
+        $email->source_via             = Thread::PERSON_CUSTOMER;
+        $email->customer_id            = $conversation->customer_id;
+        $email->created_by_customer_id = $conversation->customer_id;
+        $email->save();
+        $file = $this->attach($email, 'contract.pdf', 'application/pdf', base64_decode(self::PDF));
+        \Eventy::action('conversation.customer_replied', $conversation, $email, $conversation->customer);
+
+        return $file;
+    }
+
+    public function test_verified_browser_downloads_a_customer_email_file()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site, 'Hello');
+        $file = $this->emailFile($chat['conversation']);
+
+        // The starting browser is cut off by the email; a redeemed link verifies another.
+        $this->assertNotFound($this->download($site, $file->id, $chat['token']), 'unverified browser');
+
+        $new = $this->newChatToken();
+        $link = ContinueLink::mint(Conversation::find($chat['conversation']->id));
+        preg_match('/#lcff-continue=([A-Za-z0-9_-]{43})$/', $link, $m);
+        $this->api('POST', $site, '/continue', null, ['link' => $m[1], 'new_token' => $new])->assertStatus(200);
+
+        $d = $this->download($site, $file->id, $new);
+        $d->assertStatus(200);
+        $this->assertSame(base64_decode(self::PDF), $this->body($d));
+    }
+
+    public function test_email_choice_file_is_refused_to_an_unverified_browser()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site, 'Hello');
+        $thread = $this->agentThread($chat['conversation'], Thread::TYPE_MESSAGE, false);
+        $file = $this->attach($thread, 'offer.pdf', 'application/pdf', base64_decode(self::PDF));
+        Message::create([
+            'conversation_id' => $chat['conversation']->id,
+            'thread_id'       => $thread->id,
+            'direction'       => Message::DIRECTION_OUT,
+            'via'             => Message::VIA_EMAIL,
+            'published_at'    => now(),
+        ]);
+
+        $this->assertNotFound($this->download($site, $file->id, $chat['token']), 'email-choice file');
     }
 
     // ----------------------------------------------------------------- limits

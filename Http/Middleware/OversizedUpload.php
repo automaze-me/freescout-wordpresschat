@@ -3,6 +3,7 @@
 namespace Modules\WordPressChat\Http\Middleware;
 
 use Closure;
+use Illuminate\Database\QueryException;
 use Modules\WordPressChat\Entities\Site;
 use Modules\WordPressChat\Services\ChatAttachment;
 
@@ -34,7 +35,8 @@ class OversizedUpload
 
     public function handle($request, Closure $next)
     {
-        if (!$request->isMethod('POST')) {
+        // Laravel's own maintenance check runs later in the stack and answers.
+        if (!$request->isMethod('POST') || app()->isDownForMaintenance()) {
             return $next($request);
         }
 
@@ -45,7 +47,14 @@ class OversizedUpload
         }
 
         $publicId = self::publicId($request);
-        $site = $publicId === null ? null : Site::where('public_id', $publicId)->first();
+
+        try {
+            $site = $publicId === null ? null : Site::where('public_id', $publicId)->first();
+        } catch (QueryException $e) {
+            // A database outage: the same 503 the route's RequireSchema gives.
+            // No site is known, so no CORS headers.
+            return $this->withHeaders(RequireSchema::maintenance());
+        }
 
         if (!$site) {
             return $next($request);
@@ -58,9 +67,19 @@ class OversizedUpload
             return response()->json(['error' => 'validation', 'field' => 'file', 'reason' => 'too_large'], 422);
         });
 
-        // The global ResponseHeaders middleware never sees this answer.
+        return $this->withHeaders($response);
+    }
+
+    /** The headers the global ResponseHeaders middleware would add; it never sees this answer. */
+    private function withHeaders($response)
+    {
         $response->headers->set('X-Content-Type-Options', 'nosniff');
         $response->headers->set('Cache-Control', 'no-cache, max-age=0, must-revalidate, no-store');
+        $response->headers->set('Pragma', 'no-cache');
+
+        if (\Helper::isHttps()) {
+            $response->headers->set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+        }
 
         return $response;
     }

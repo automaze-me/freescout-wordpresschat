@@ -217,6 +217,15 @@ class Visibility
     }
 
     /**
+     * The `limits` block every answer that sizes the widget's file check
+     * carries: the largest file it may send (Ruling E3). The one source.
+     */
+    public static function limits(Site $site): array
+    {
+        return ['attachment_mb' => ChatAttachment::effectiveLimitMb($site)];
+    }
+
+    /**
      * The widget's summary for the session, from the conversation it is in
      * (latestConversation()): `identity` {level, account} and `conversation`
      * {status, poll, key, notice}, or null when it sees none. Then the level
@@ -255,9 +264,7 @@ class Visibility
                 'account' => $session->accountFresh(),
             ],
             'conversation' => $conversation,
-            'limits'       => [
-                'attachment_mb' => ChatAttachment::effectiveLimitMb($session->site ?: new Site()),
-            ],
+            'limits'       => self::limits($session->site ?: new Site()),
             'features'     => self::FEATURES,
         ];
     }

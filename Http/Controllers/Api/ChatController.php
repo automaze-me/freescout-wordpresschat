@@ -116,7 +116,7 @@ class ChatController extends Controller
             $reason = ChatAttachment::validate($file, $site);
 
             if ($reason !== null) {
-                return response()->json(['error' => 'validation', 'field' => 'file', 'reason' => $reason] + ['limits' => self::limits($site)], 422);
+                return response()->json(['error' => 'validation', 'field' => 'file', 'reason' => $reason] + ['limits' => Visibility::limits($site)], 422);
             }
         }
 
@@ -262,16 +262,6 @@ class ChatController extends Controller
     }
 
     /**
-     * The `limits` block of the status answers (Visibility::status()), for
-     * answers that carry no status, so the widget can still size its file
-     * check.
-     */
-    public static function limits(Site $site): array
-    {
-        return ['attachment_mb' => ChatAttachment::effectiveLimitMb($site)];
-    }
-
-    /**
      * Read-only: the session whose chat token the widget generated for its
      * first message (as IdentityController::continueChat() looks it up).
      */
@@ -290,7 +280,7 @@ class ChatController extends Controller
     {
         $body = ['error' => 'validation', 'field' => $field];
         if ($site) {
-            $body += ['limits' => self::limits($site)];
+            $body += ['limits' => Visibility::limits($site)];
         }
 
         return response()->json($body, 422);

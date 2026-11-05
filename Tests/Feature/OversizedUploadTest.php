@@ -2,7 +2,9 @@
 
 namespace Modules\WordPressChat\Tests\Feature;
 
+use Illuminate\Database\QueryException;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Entities\Session;
 use Modules\WordPressChat\Entities\Site;
@@ -57,6 +59,46 @@ class OversizedUploadTest extends TestCase
         return ['sessions' => Session::count(), 'messages' => Message::count()];
     }
 
+    public function test_db_outage_answers_503()
+    {
+        $site = $this->makeSite();
+        $length = $this->overLimit();
+
+        DB::listen(function ($query) {
+            if (strpos($query->sql, 'wordpresschat_sites') !== false) {
+                throw new QueryException($query->sql, [], new \Exception('connection lost'));
+            }
+        });
+
+        $r = $this->postWithLength($this->messagesPath($site), $length, ['HTTP_ORIGIN' => $site->origin]);
+
+        $r->assertStatus(503)->assertExactJson(['error' => 'maintenance']);
+        $this->assertSame('300', $r->headers->get('Retry-After'));
+        $this->assertNull($r->headers->get('Access-Control-Allow-Origin'));
+    }
+
+    public function test_maintenance_mode_is_left_to_laravel()
+    {
+        $site = $this->makeSite();
+        $length = $this->overLimit();
+        $down = storage_path('framework/down');
+        $wasDown = file_exists($down);
+
+        try {
+            file_put_contents($down, json_encode(['time' => time(), 'message' => null, 'retry' => null]));
+
+            $r = $this->postWithLength($this->messagesPath($site), $length, ['HTTP_ORIGIN' => $site->origin]);
+
+            // Not the middleware's 422: the request went on to Laravel's own check.
+            $r->assertStatus(503);
+            $this->assertNotSame('too_large', $r->json()['reason'] ?? null);
+        } finally {
+            if (!$wasDown && file_exists($down)) {
+                unlink($down);
+            }
+        }
+    }
+
     public function test_the_provider_puts_it_in_front_of_the_global_stack()
     {
         $kernel = $this->app[\Illuminate\Contracts\Http\Kernel::class];
@@ -88,6 +130,7 @@ class OversizedUploadTest extends TestCase
         $this->assertSame('Content-Type, X-Chat-Token, X-Chat-Page', $r->headers->get('Access-Control-Allow-Headers'));
         $this->assertSame('600', $r->headers->get('Access-Control-Max-Age'));
         $this->assertSame('nosniff', $r->headers->get('X-Content-Type-Options'));
+        $this->assertSame('no-cache', $r->headers->get('Pragma'));
         $this->assertSame($before, $this->rowCounts());
     }
 

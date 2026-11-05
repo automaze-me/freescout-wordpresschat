@@ -190,27 +190,46 @@ class ChatAttachment
     }
 
     /**
-     * The name store() gives $file (before core's own replacements, such as
-     * spaces to underscores), or null when its bytes are not an allowed type.
+     * The name the stored attachment ends up with: store()'s cleaned name
+     * after core's own replacement of spaces, "#" and "/" by underscores
+     * (Attachment::create()), or null when the bytes are not an allowed type.
      */
     public static function fileName(UploadedFile $file): ?string
     {
         $path = self::path($file);
         $mime = $path === null ? null : self::sniff($path);
 
-        return $mime === null ? null : self::cleanName((string) $file->getClientOriginalName(), self::TYPES[$mime]);
+        if ($mime === null) {
+            return null;
+        }
+
+        return preg_replace('/[ #\/]/', '_', self::cleanName((string) $file->getClientOriginalName(), self::TYPES[$mime]));
     }
 
     /**
-     * The allowed type finfo reads from the file's bytes, or null.
+     * The allowed type finfo reads from the file's bytes, or null. A send
+     * asks for it up to three times (validate, fileName, store), so the
+     * answer is kept per path, size and modification time.
      */
     public static function sniff(string $path): ?string
     {
-        $finfo = new \finfo(FILEINFO_MIME_TYPE);
-        $mime = @$finfo->file($path);
-        $mime = is_string($mime) ? strtolower(trim($mime)) : '';
+        static $known = [];
 
-        return isset(self::TYPES[$mime]) ? $mime : null;
+        clearstatcache(true, $path);
+        $key = $path.'|'.(int) @filesize($path).'|'.(int) @filemtime($path);
+
+        if (!array_key_exists($key, $known)) {
+            $finfo = new \finfo(FILEINFO_MIME_TYPE);
+            $mime = @$finfo->file($path);
+            $mime = is_string($mime) ? strtolower(trim($mime)) : '';
+
+            if (count($known) >= 32) {
+                $known = [];
+            }
+            $known[$key] = isset(self::TYPES[$mime]) ? $mime : null;
+        }
+
+        return $known[$key];
     }
 
     /**

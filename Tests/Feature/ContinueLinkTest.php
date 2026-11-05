@@ -281,6 +281,17 @@ class ContinueLinkTest extends TestCase
         $this->assertSame($sessions, Session::count());
     }
 
+    public function test_continue_answer_carries_limits()
+    {
+        $site = $this->makeSite(['max_attachment_mb' => 4]);
+        $chat = $this->startChat($site, 'Hello');
+
+        list($response) = $this->redeemAsNewBrowser($site, $this->mint($chat['conversation']));
+
+        $response->assertStatus(200);
+        $this->assertSame(Visibility::limits($site), $response->json()['limits']);
+    }
+
     public function test_new_browser_redeems_and_sees_full_history()
     {
         $site = $this->makeSite();

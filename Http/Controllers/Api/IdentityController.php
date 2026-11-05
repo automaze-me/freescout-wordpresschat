@@ -255,7 +255,7 @@ class IdentityController extends Controller
         }
 
         if (!VisitorIdentity::hasAccountChats((int) $site->id, $payload['uid'])) {
-            return response()->json(['linked' => false, 'limits' => ChatController::limits($site)]);
+            return response()->json(['linked' => false, 'limits' => Visibility::limits($site)]);
         }
 
         $session = VisitorAuth::claim($site, $newToken);

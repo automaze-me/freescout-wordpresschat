@@ -65,16 +65,11 @@ class AttachmentController extends Controller
      */
     private function stream(Attachment $attachment)
     {
-        $path = $attachment->getStorageFilePath();
-
-        try {
-            $stream = Attachment::getDisk()->readStream($path);
-        } catch (\Throwable $e) {
-            $stream = false;
-        }
+        // Core logs its own failure; this warning names the attachment.
+        $stream = $attachment->getFileStream();
 
         if (!is_resource($stream)) {
-            \Log::warning('[WordPressChat] Attachment #'.$attachment->id.' is missing from storage: '.$path);
+            \Log::warning('[WordPressChat] Attachment #'.$attachment->id.' is missing from storage: '.$attachment->getStorageFilePath());
 
             return null;
         }
