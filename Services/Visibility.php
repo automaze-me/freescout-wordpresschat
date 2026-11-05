@@ -40,6 +40,12 @@ use Modules\WordPressChat\Level;
 class Visibility
 {
     /**
+     * Capabilities this server offers, for a widget newer or older than it.
+     * Every answer that carries `identity` carries them too.
+     */
+    const FEATURES = ['page'];
+
+    /**
      * Seconds a closed conversation keeps the widget polling. "Reply &
      * Close" flips the status at once, but the closing reply is published
      * only after core's undo window (about 15 s) has passed; stopping on the
@@ -210,6 +216,7 @@ class Visibility
             'limits'       => [
                 'attachment_mb' => ChatAttachment::effectiveLimitMb($session->site ?: new Site()),
             ],
+            'features'     => self::FEATURES,
         ];
     }
 

@@ -180,7 +180,7 @@ class SendMessageTest extends TestCase
 
         $this->send($site, ['text' => str_repeat('ä', 5001), 'client_message_id' => 'long-0001'])
             ->assertStatus(422)
-            ->assertExactJson(['error' => 'validation', 'field' => 'text']);
+            ->assertExactJson(['error' => 'validation', 'field' => 'text', 'limits' => ['attachment_mb' => 10]]);
 
         $this->assertSame($sessions, Session::count(), 'A rejected message must not issue a session.');
     }
@@ -199,15 +199,15 @@ class SendMessageTest extends TestCase
 
         $this->send($site, ['text' => " \n\t ", 'client_message_id' => 'blank-0001'])
             ->assertStatus(422)
-            ->assertExactJson(['error' => 'validation', 'field' => 'text']);
+            ->assertExactJson(['error' => 'validation', 'field' => 'text', 'limits' => ['attachment_mb' => 10]]);
 
         $this->send($site, ['client_message_id' => 'blank-0002'])
             ->assertStatus(422)
-            ->assertExactJson(['error' => 'validation', 'field' => 'text']);
+            ->assertExactJson(['error' => 'validation', 'field' => 'text', 'limits' => ['attachment_mb' => 10]]);
 
         $this->send($site, ['text' => ['array'], 'client_message_id' => 'blank-0003'])
             ->assertStatus(422)
-            ->assertExactJson(['error' => 'validation', 'field' => 'text']);
+            ->assertExactJson(['error' => 'validation', 'field' => 'text', 'limits' => ['attachment_mb' => 10]]);
     }
 
     public function test_bad_client_message_id_is_422()
@@ -222,7 +222,7 @@ class SendMessageTest extends TestCase
 
             $this->send($site, $data)
                 ->assertStatus(422)
-                ->assertExactJson(['error' => 'validation', 'field' => 'client_message_id']);
+                ->assertExactJson(['error' => 'validation', 'field' => 'client_message_id', 'limits' => ['attachment_mb' => 10]]);
         }
 
         $this->send($site, ['text' => 'Hello', 'client_message_id' => str_repeat('A', 64)])->assertStatus(201);
@@ -234,7 +234,7 @@ class SendMessageTest extends TestCase
 
         $response = $this->send($site, ['text' => '', 'client_message_id' => 'noaccept-0001'], null, false);
 
-        $response->assertStatus(422)->assertExactJson(['error' => 'validation', 'field' => 'text']);
+        $response->assertStatus(422)->assertExactJson(['error' => 'validation', 'field' => 'text', 'limits' => ['attachment_mb' => 10]]);
         $this->assertStringContainsString('application/json', $response->headers->get('Content-Type'));
         $response->assertHeader('Access-Control-Allow-Origin', self::ORIGIN);
     }
@@ -466,7 +466,7 @@ class SendMessageTest extends TestCase
         foreach ($bad as $case => $newToken) {
             $this->send($site, ['text' => 'Hello', 'client_message_id' => 'badtoken-0001', 'new_token' => $newToken])
                 ->assertStatus(422)
-                ->assertExactJson(['error' => 'validation', 'field' => 'new_token']);
+                ->assertExactJson(['error' => 'validation', 'field' => 'new_token', 'limits' => ['attachment_mb' => 10]]);
 
             $this->assertSame($before, $this->rowCounts(), "new_token $case wrote rows.");
         }
@@ -522,7 +522,7 @@ class SendMessageTest extends TestCase
 
         $this->send($site, ['text' => "\u{0000}\u{0001}\u{001F}\u{007F}", 'client_message_id' => 'control-0002'])
             ->assertStatus(422)
-            ->assertExactJson(['error' => 'validation', 'field' => 'text']);
+            ->assertExactJson(['error' => 'validation', 'field' => 'text', 'limits' => ['attachment_mb' => 10]]);
 
         $this->assertSame($before, $this->rowCounts());
     }
@@ -636,7 +636,7 @@ class SendMessageTest extends TestCase
             'new_token'         => $this->newChatToken(),
         ], [], [], ['HTTP_ORIGIN' => self::ORIGIN, 'HTTP_ACCEPT' => 'application/json'])
             ->assertStatus(422)
-            ->assertExactJson(['error' => 'validation', 'field' => 'text']);
+            ->assertExactJson(['error' => 'validation', 'field' => 'text', 'limits' => ['attachment_mb' => 10]]);
 
         $this->assertSame($sessions, Session::count());
         $this->assertSame($threads, Thread::count());

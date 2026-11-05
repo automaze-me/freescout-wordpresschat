@@ -209,7 +209,7 @@ class AttachmentTest extends TestCase
         $token = $r->json()['token'];
         $this->sendFile($site, $this->upload(base64_decode(self::PNG), 'b.png'), ['text' => "  \n "], $token)->assertStatus(201);
         $this->sendFile($site, null, ['text' => ''], $token)
-            ->assertStatus(422)->assertExactJson(['error' => 'validation', 'field' => 'text']);
+            ->assertStatus(422)->assertExactJson(['error' => 'validation', 'field' => 'text', 'limits' => ['attachment_mb' => 10]]);
     }
 
     public static function allowedTypes(): array
@@ -257,7 +257,7 @@ class AttachmentTest extends TestCase
             $r = $this->sendFile($site, $this->upload(base64_decode($base64), $name, $clientMime), ['text' => 'look']);
 
             $this->assertSame(422, $r->status(), $case);
-            $this->assertSame(['error' => 'validation', 'field' => 'file', 'reason' => 'type'], $r->json(), $case);
+            $this->assertSame(['error' => 'validation', 'field' => 'file', 'reason' => 'type'], array_diff_key($r->json(), ['limits' => 1]), $case);
         }
 
         // Not even the session of a first message was written.
@@ -310,7 +310,7 @@ class AttachmentTest extends TestCase
 
         $r = $this->sendFile($site, $this->upload($big, 'big.png', 'image/png'), ['text' => 'big one']);
 
-        $r->assertStatus(422)->assertExactJson(['error' => 'validation', 'field' => 'file', 'reason' => 'too_large']);
+        $r->assertStatus(422)->assertExactJson(['error' => 'validation', 'field' => 'file', 'reason' => 'too_large', 'limits' => ['attachment_mb' => 1]]);
         $this->assertSame($before, $this->rowCounts());
     }
 
@@ -332,14 +332,14 @@ class AttachmentTest extends TestCase
             $r = $this->sendFile($site, $this->failedUpload($error), ['text' => 'with a file']);
 
             $this->assertSame(422, $r->status(), 'error '.$error);
-            $this->assertSame(['error' => 'validation', 'field' => 'file', 'reason' => $reason], $r->json(), 'error '.$error);
+            $this->assertSame(['error' => 'validation', 'field' => 'file', 'reason' => $reason], array_diff_key($r->json(), ['limits' => 1]), 'error '.$error);
         }
 
         // An empty file, and a `file` field that is no upload at all.
         $r = $this->sendFile($site, $this->upload('', 'empty.png', 'image/png'), ['text' => 'x']);
-        $r->assertStatus(422)->assertExactJson(['error' => 'validation', 'field' => 'file', 'reason' => 'missing']);
+        $r->assertStatus(422)->assertExactJson(['error' => 'validation', 'field' => 'file', 'reason' => 'missing', 'limits' => ['attachment_mb' => 10]]);
         $r = $this->sendFile($site, null, ['text' => 'x', 'file' => 'not-a-file']);
-        $r->assertStatus(422)->assertExactJson(['error' => 'validation', 'field' => 'file', 'reason' => 'missing']);
+        $r->assertStatus(422)->assertExactJson(['error' => 'validation', 'field' => 'file', 'reason' => 'missing', 'limits' => ['attachment_mb' => 10]]);
 
         $this->assertSame($before, $this->rowCounts());
     }

@@ -237,6 +237,15 @@ class InboundMessage
         return nl2br(str_replace('&#039;', "'", e($text, true)));
     }
 
+    /**
+     * The session's inbound row with this client_message_id, if any.
+     * Read-only; lets a caller answer a retry before checking its file.
+     */
+    public static function existing(Session $session, string $clientMessageId): ?Message
+    {
+        return self::find($session, $clientMessageId);
+    }
+
     private static function find(Session $session, string $clientMessageId)
     {
         return Message::where('session_id', $session->id)

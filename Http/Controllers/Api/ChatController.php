@@ -6,6 +6,8 @@ use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Routing\Controller;
 use Modules\WordPressChat\Entities\Message;
+use Modules\WordPressChat\Entities\Session;
+use Modules\WordPressChat\Entities\Site;
 use Modules\WordPressChat\Exceptions\MessageConflictException;
 use Modules\WordPressChat\Services\ChatAttachment;
 use Modules\WordPressChat\Services\IdentityPayload;
@@ -64,10 +66,20 @@ class ChatController extends Controller
             }
         }
 
+        // The honeypot: a human never fills it. Nothing is stored.
+        $hp = $request->input('hp');
+        if ($hp !== null && (!is_string($hp) || trim($hp) !== '')) {
+            return $this->invalid('hp', $site);
+        }
+
         $text = $request->input('text');
 
+        if ($text !== null && !is_string($text)) {
+            return $this->invalid('text', $site);
+        }
+
         if (is_string($text) && !mb_check_encoding($text, 'UTF-8')) {
-            return $this->invalid('text');
+            return $this->invalid('text', $site);
         }
 
         $text = is_string($text) ? trim(self::stripControlChars($text)) : '';
@@ -78,23 +90,32 @@ class ChatController extends Controller
         $hasFile = $request->has('file');
 
         if ($length < ($hasFile ? 0 : 1) || $length > self::MAX_TEXT_LENGTH) {
-            return $this->invalid('text');
+            return $this->invalid('text', $site);
         }
 
         $clientMessageId = $request->input('client_message_id');
 
         if (!is_string($clientMessageId) || !preg_match('/\A[A-Za-z0-9-]{8,64}\z/', $clientMessageId)) {
-            return $this->invalid('client_message_id');
+            return $this->invalid('client_message_id', $site);
         }
 
+        // A retry of a stored message is answered before the file is looked
+        // at: the file was checked when the message was stored, and the
+        // limits may have changed since. The lookup is read-only.
         $file = null;
+        $replay = false;
         if ($hasFile) {
+            $known = $session ?: $this->sessionForNewToken($request, $site);
+            $replay = $known && InboundMessage::existing($known, $clientMessageId) !== null;
+        }
+
+        if ($hasFile && !$replay) {
             $file = $request->file('file');
             $file = $file instanceof UploadedFile ? $file : null;
             $reason = ChatAttachment::validate($file, $site);
 
             if ($reason !== null) {
-                return response()->json(['error' => 'validation', 'field' => 'file', 'reason' => $reason], 422);
+                return response()->json(['error' => 'validation', 'field' => 'file', 'reason' => $reason] + ['limits' => self::limits($site)], 422);
             }
         }
 
@@ -105,7 +126,7 @@ class ChatController extends Controller
             $newToken = $request->input('new_token');
 
             if (!is_string($newToken) || !preg_match('/\A[A-Za-z0-9_-]{43}\z/', $newToken)) {
-                return $this->invalid('new_token');
+                return $this->invalid('new_token', $site);
             }
 
             $session = VisitorAuth::claim($site, $newToken);
@@ -184,6 +205,7 @@ class ChatController extends Controller
             'identity'     => $status['identity'],
             'conversation' => $status['conversation'],
             'limits'       => $status['limits'],
+            'features'     => $status['features'],
         ]);
     }
 
@@ -234,9 +256,39 @@ class ChatController extends Controller
         return preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $text);
     }
 
-    private function invalid($field)
+    /**
+     * The `limits` block of the status answers (Visibility::status()), for
+     * answers that carry no status, so the widget can still size its file
+     * check.
+     */
+    public static function limits(Site $site): array
     {
-        return response()->json(['error' => 'validation', 'field' => $field], 422);
+        return ['attachment_mb' => ChatAttachment::effectiveLimitMb($site)];
+    }
+
+    /**
+     * Read-only: the session whose chat token the widget generated for its
+     * first message (as IdentityController::continueChat() looks it up).
+     */
+    private function sessionForNewToken(Request $request, Site $site): ?Session
+    {
+        $newToken = $request->input('new_token');
+
+        if (!is_string($newToken) || !preg_match('/\A[A-Za-z0-9_-]{43}\z/', $newToken)) {
+            return null;
+        }
+
+        return Session::where('token_hash', hash('sha256', $newToken))->where('site_id', $site->id)->first();
+    }
+
+    private function invalid($field, ?Site $site = null)
+    {
+        $body = ['error' => 'validation', 'field' => $field];
+        if ($site) {
+            $body += ['limits' => self::limits($site)];
+        }
+
+        return response()->json($body, 422);
     }
 
     private function unauthorized()

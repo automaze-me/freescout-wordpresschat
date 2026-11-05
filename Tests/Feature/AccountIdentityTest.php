@@ -367,7 +367,7 @@ class AccountIdentityTest extends TestCase
         $this->api('POST', $site, '/identity', null, [
             'login_token' => $this->loginToken($site, $new),
             'new_token'   => $new,
-        ])->assertStatus(200)->assertExactJson(['linked' => false]);
+        ])->assertStatus(200)->assertExactJson(['linked' => false, 'limits' => ['attachment_mb' => 10]]);
 
         $this->assertSame($sessions, Session::count());
         $this->assertSame($customers, Customer::count());
