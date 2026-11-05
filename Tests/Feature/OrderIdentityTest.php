@@ -177,6 +177,8 @@ class OrderIdentityTest extends TestCase
         }
 
         foreach ($tokens as $token) {
+            // One visitor may try 5 order tokens per 15 minutes (Throttle).
+            $this->forgetRateLimits();
             $this->order($site, $chat['token'], $token)
                 ->assertStatus(403)->assertExactJson(['error' => 'identity_rejected']);
         }

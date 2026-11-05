@@ -3,6 +3,7 @@
 namespace Modules\WordPressChat\Providers;
 
 use Illuminate\Support\ServiceProvider;
+use Modules\WordPressChat\Console\Cleanup;
 use Modules\WordPressChat\Console\SendDueEmails;
 use Modules\WordPressChat\Http\Middleware\OversizedUpload;
 use Modules\WordPressChat\Listeners\PublishReplyToChat;
@@ -76,6 +77,7 @@ class WordPressChatServiceProvider extends ServiceProvider
 
         $this->commands([
             SendDueEmails::class,
+            Cleanup::class,
         ]);
     }
 
@@ -89,6 +91,11 @@ class WordPressChatServiceProvider extends ServiceProvider
             $schedule->command('wordpresschat:send-due-emails')
                 ->everyMinute()
                 ->withoutOverlapping(5);
+
+            // Expired rate-limit counters and other housekeeping.
+            $schedule->command('wordpresschat:cleanup')
+                ->hourly()
+                ->withoutOverlapping(10);
 
             return $schedule;
         });

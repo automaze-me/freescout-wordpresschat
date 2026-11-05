@@ -130,6 +130,8 @@ class TypedEmailTest extends TestCase
         $chat = $this->startChat($site);
 
         foreach (['not-an-email', str_repeat('a', 190).'@example.test', 123, ['x'], 'ü@ü', 'a@.', 'anna@müller.de', 'Anna Maier@firma.de', 'a@b@c'] as $bad) {
+            // One visitor may try 5 addresses per 15 minutes (Throttle).
+            $this->forgetRateLimits();
             $this->assertJsonResponse($this->identify($site, $chat['token'], $bad), 422, ['error' => 'validation', 'field' => 'email']);
         }
 
@@ -148,6 +150,10 @@ class TypedEmailTest extends TestCase
         $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], ['email' => 'a@example.test', 'login_token' => 'x']), 422, ['field' => 'identity']);
         $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], ['order_token' => 'x', 'login_token' => 'x']), 422, ['field' => 'identity']);
         $this->assertJsonResponse($this->api('POST', $site, '/identity', $chat['token'], ['email' => 'a@example.test', 'order_token' => null]), 422, ['field' => 'identity']);
+
+        // One visitor may try 5 addresses or order tokens per 15 minutes
+        // (Throttle); four were counted above.
+        $this->forgetRateLimits();
 
         // Empty or blank: null after TrimStrings/ConvertEmptyStringsToNull,
         // still the email field (the widget shows askInvalid).

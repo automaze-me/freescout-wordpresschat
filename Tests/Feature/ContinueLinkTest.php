@@ -500,16 +500,19 @@ class ContinueLinkTest extends TestCase
                 ->assertStatus(422)->assertExactJson(['error' => 'validation', 'field' => 'link']);
         }
 
+        // Another client address: one address may try 10 links per 15
+        // minutes (Throttle).
+        $ip = ['REMOTE_ADDR' => '198.51.100.12'];
         foreach ([null, 'short', str_repeat('!', 43), ['x']] as $bad) {
             $body = ['link' => $link];
             if ($bad !== null) {
                 $body['new_token'] = $bad;
             }
-            $this->api('POST', $site, '/continue', null, $body)
+            $this->api('POST', $site, '/continue', null, $body, [], $ip)
                 ->assertStatus(422)->assertExactJson(['error' => 'validation', 'field' => 'new_token']);
         }
 
-        $this->api('POST', $site, '/continue', $this->newChatToken(), ['link' => $link])
+        $this->api('POST', $site, '/continue', $this->newChatToken(), ['link' => $link], [], $ip)
             ->assertStatus(401)->assertExactJson(['error' => 'unauthorized']);
 
         $this->assertNull(Link::where('token_hash', hash('sha256', $link))->firstOrFail()->used_at);

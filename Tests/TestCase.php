@@ -147,14 +147,16 @@ abstract class TestCase extends CoreTestCase
     /**
      * Calls a public chat API route of $site as the widget would: with the
      * site's Origin, JSON accepted, and the visitor's token when given.
+     * $server overrides any server variable, e.g. ['REMOTE_ADDR' => …] for
+     * a test that needs its own client address under the rate limits.
      */
-    protected function api(string $method, Site $site, string $path, ?string $token = null, $data = null, array $headers = []): \Illuminate\Foundation\Testing\TestResponse
+    protected function api(string $method, Site $site, string $path, ?string $token = null, $data = null, array $headers = [], array $server = []): \Illuminate\Foundation\Testing\TestResponse
     {
-        $server = [
+        $server = array_merge([
             'CONTENT_TYPE' => 'application/json',
             'HTTP_ORIGIN'  => $site->origin,
             'HTTP_ACCEPT'  => 'application/json',
-        ];
+        ], $server);
         if ($token !== null) {
             $server['HTTP_X_CHAT_TOKEN'] = $token;
         }
@@ -174,13 +176,13 @@ abstract class TestCase extends CoreTestCase
      * Like api(), but as a multipart form post: $fields go into the form
      * body, $files (field name => UploadedFile) into the upload bag.
      */
-    protected function apiMultipart(string $method, Site $site, string $path, ?string $token, array $fields, array $files = [], array $headers = []): \Illuminate\Foundation\Testing\TestResponse
+    protected function apiMultipart(string $method, Site $site, string $path, ?string $token, array $fields, array $files = [], array $headers = [], array $server = []): \Illuminate\Foundation\Testing\TestResponse
     {
-        $server = [
+        $server = array_merge([
             'CONTENT_TYPE' => 'multipart/form-data; boundary=----wpc-test',
             'HTTP_ORIGIN'  => $site->origin,
             'HTTP_ACCEPT'  => 'application/json',
-        ];
+        ], $server);
         if ($token !== null) {
             $server['HTTP_X_CHAT_TOKEN'] = $token;
         }
@@ -193,6 +195,18 @@ abstract class TestCase extends CoreTestCase
             '/wordpress-chat/api/v1/sites/'.$site->public_id.$path,
             $fields, [], $files, $server
         );
+    }
+
+    /**
+     * Forgets every rate-limit counter (rows of this test's transaction).
+     * For a test that sends one visitor's attempts faster than the limits
+     * allow, to check the controller's answer to each: Throttle and its
+     * RULES stay as they are. A test over an address limit takes its own
+     * client addresses instead (the $server of api()).
+     */
+    protected function forgetRateLimits(): void
+    {
+        \DB::table('wordpresschat_rate_limits')->delete();
     }
 
     /** A chat token the way the widget makes one: 32 random bytes, base64url, no padding. */
@@ -249,16 +263,16 @@ abstract class TestCase extends CoreTestCase
 
     /**
      * Starts a chat with a tokenless first send. Returns token, session,
-     * conversation and the raw response.
+     * conversation and the raw response. $server goes to api().
      */
-    protected function startChat(Site $site, string $text = 'Hello', array $body = []): array
+    protected function startChat(Site $site, string $text = 'Hello', array $body = [], array $server = []): array
     {
         $new = $this->newChatToken();
         $response = $this->api('POST', $site, '/messages', null, array_merge([
             'text'              => $text,
             'client_message_id' => bin2hex(random_bytes(8)),
             'new_token'         => $new,
-        ], $body));
+        ], $body), [], $server);
         $response->assertStatus(201);
 
         $token = $response->json()['token'];
