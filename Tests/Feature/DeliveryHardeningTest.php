@@ -643,6 +643,101 @@ class DeliveryHardeningTest extends TestCase
         $this->assertCount(1, $this->redItems($target));
     }
 
+    /**
+     * Runs $job inside the real merge of $source into $target, in core's
+     * window: the threads are already moved, `conversation.merged` (and so
+     * MergeChat) has not fired yet. Core's first merge line item is written
+     * there. Returns [times run, the row's email_status when it ran].
+     */
+    private function mergeWithJobInTheWindow(Conversation $target, Conversation $source, SendChatEmail $job, Message $row): array
+    {
+        $ran = 0;
+        $statusWhenRun = null;
+        $user = $this->adminUser();
+
+        Thread::created(function ($created) use ($job, $row, &$ran, &$statusWhenRun) {
+            if (!$ran && (int) $created->action_type === Thread::ACTION_TYPE_MERGED) {
+                $ran++;
+                $statusWhenRun = $this->emailStatus($row);
+                app()->call([$job, 'handle']);
+            }
+        });
+
+        $this->assertTrue($target->mergeConversations(Conversation::find($source->id), $user));
+
+        return [$ran, $statusWhenRun];
+    }
+
+    /**
+     * Review Focus 1, the email path: a fallback job that claims A's queued
+     * reply in the merge window finds it in B's conversation. It must not
+     * email B's visitor; the batch fails with the merge red item on B.
+     */
+    public function test_fallback_job_in_the_merge_window_never_emails_the_other_visitor()
+    {
+        $site = $this->makeSite();
+        $a = $this->startChat($site, 'Question from A');
+        $b = $this->startChat($site, 'Question from B');
+        $source = Conversation::find($a['conversation']->id);
+        $source->customer_email = 'anna@example.test';
+        $source->save();
+        $target = Conversation::find($b['conversation']->id);
+        $target->customer_email = 'bert@example.test';
+        $target->save();
+        list($thread, $row) = $this->reply($source, 'Private answer for A');
+        $this->queued([$row], (int) $thread->id, 10);
+        $job = new SendChatEmail((int) $source->id, (int) $thread->id);
+        $mailer = $this->fake();
+
+        list($ran, $statusWhenRun) = $this->mergeWithJobInTheWindow($target, $source, $job, $row);
+
+        $this->assertSame(1, $ran);
+        $this->assertSame(Message::EMAIL_QUEUED, $statusWhenRun);
+        $this->assertSame((int) $target->id, (int) Thread::find($thread->id)->conversation_id);
+        $this->assertCount(0, $mailer->calls);
+        $this->assertSame(Message::EMAIL_FAILED, $this->emailStatus($row));
+        $items = $this->redItems($target);
+        $this->assertCount(1, $items);
+        $this->assertSame(
+            'A website chat reply had not reached the visitor when this conversation was merged. It was not sent by email.',
+            $items[0]->getActionText('', false)
+        );
+    }
+
+    /** Both chats are one browser's: the job in the merge window still emails that visitor. */
+    public function test_fallback_job_in_the_merge_window_of_one_browsers_chats_still_sends()
+    {
+        $site = $this->makeSite();
+        $first = $this->startChat($site, 'First question');
+        $source = Conversation::find($first['conversation']->id);
+        $source->customer_email = 'anna@example.test';
+        $source->status = Conversation::STATUS_CLOSED;
+        $source->save();
+        $second = $this->api('POST', $site, '/messages', $first['token'], [
+            'text'              => 'Second question',
+            'client_message_id' => bin2hex(random_bytes(8)),
+        ]);
+        $second->assertStatus(201);
+        $target = Conversation::find(Message::findOrFail($second->json()['message']['id'])->conversation_id);
+        $target->customer_email = 'anna@example.test';
+        $target->save();
+        $this->assertSame(2, Access::where('session_id', $first['session']->id)->count());
+        list($thread, $row) = $this->reply($source, 'Answer to the first question');
+        $this->queued([$row], (int) $thread->id, 10);
+        $job = new SendChatEmail((int) $source->id, (int) $thread->id);
+        $mailer = $this->fake();
+
+        list($ran, $statusWhenRun) = $this->mergeWithJobInTheWindow($target, $source, $job, $row);
+
+        $this->assertSame(1, $ran);
+        $this->assertSame(Message::EMAIL_QUEUED, $statusWhenRun);
+        $this->assertCount(1, $mailer->calls);
+        $this->assertSame((int) $target->id, $mailer->calls[0]['conversation_id']);
+        $this->assertSame('anna@example.test', DueEmails::address(Conversation::find($target->id)));
+        $this->assertSame(Message::EMAIL_SENT, $this->emailStatus($row));
+        $this->assertCount(0, $this->redItems($target));
+    }
+
     /** Both chats are one browser's: the late reply follows the merge into the target. */
     public function test_late_reply_after_a_same_browser_merge_is_published()
     {

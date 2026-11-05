@@ -5,10 +5,10 @@ namespace Modules\WordPressChat\Listeners;
 use App\Conversation;
 use App\Thread;
 use Illuminate\Database\QueryException;
-use Modules\WordPressChat\Entities\Access;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Services\DeliveryClock;
 use Modules\WordPressChat\Services\FailureLineItem;
+use Modules\WordPressChat\Services\Visibility;
 use Modules\WordPressChat\WordPressChat;
 
 /**
@@ -82,7 +82,7 @@ class PublishReplyToChat
                 return;
             }
 
-            if ($merged && !self::oneVisitor($conversation, $current)) {
+            if ($merged && !Visibility::oneVisitor((int) $conversation->id, (int) $current->id)) {
                 self::mergedAway($conversation, $current, $fresh);
 
                 return;
@@ -137,20 +137,6 @@ class PublishReplyToChat
                 'error'           => $e->getMessage(),
             ]);
         }
-    }
-
-    /**
-     * Whether some browser holds Access to both $source and $target.
-     */
-    private static function oneVisitor(Conversation $source, Conversation $target): bool
-    {
-        return Access::where('conversation_id', $source->id)
-            ->whereIn('session_id', function ($q) use ($target) {
-                $q->select('session_id')
-                    ->from('wordpresschat_access')
-                    ->where('conversation_id', $target->id);
-            })
-            ->exists();
     }
 
     /**

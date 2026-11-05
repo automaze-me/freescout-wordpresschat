@@ -184,6 +184,24 @@ class Visibility
     }
 
     /**
+     * Whether some browser holds Access to both conversations, i.e. they
+     * are one visitor's. A reply written to one of them may then reach the
+     * other after a merge (Ruling P5, "Late reply after a merge").
+     */
+    public static function oneVisitor(int $sourceId, int $targetId): bool
+    {
+        $table = (new Access())->getTable();
+
+        return Access::where('conversation_id', $sourceId)
+            ->whereIn('session_id', function ($q) use ($table, $targetId) {
+                $q->select('session_id')
+                    ->from($table)
+                    ->where('conversation_id', $targetId);
+            })
+            ->exists();
+    }
+
+    /**
      * The conversation this browser is in, or null when it sees none: the
      * session's current conversation (current_conversation_id, set by its
      * last message, a redeemed link, a login that bound its chat, or account

@@ -12,12 +12,15 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
 use Modules\WordPressChat\Entities\Message;
+use Modules\WordPressChat\Listeners\MergeChat;
 use Modules\WordPressChat\Services\ChatEmail;
 use Modules\WordPressChat\Services\ContinueLink;
 use Modules\WordPressChat\Services\CoreReplyMailer;
 use Modules\WordPressChat\Services\ReplyChannel;
 use Modules\WordPressChat\Services\DueEmails;
 use Modules\WordPressChat\Services\FailureLineItem;
+use Modules\WordPressChat\Services\Visibility;
+use Modules\WordPressChat\WordPressChat;
 
 /**
  * Sends one batch of replies as one email: the rows whose email_thread_id
@@ -47,6 +50,13 @@ use Modules\WordPressChat\Services\FailureLineItem;
  * batch-outcome helpers below are shared with both, so every path moves
  * rows with the same conditional update and a batch gets at most one red
  * line item. A job that runs after its rows failed claims nothing.
+ *
+ * A merge (Ruling P5): core moves the threads before it fires
+ * `conversation.merged`, where MergeChat fails queued rows, and MergeChat
+ * leaves "sending" rows to the job. A job that claims in that window, or
+ * reads the conversation after the move, finds the replies in the merge
+ * target. It emails them there only when one browser holds both chats;
+ * otherwise the batch fails, with MergeChat's red item on the target.
  */
 class SendChatEmail implements ShouldQueue
 {
@@ -94,6 +104,12 @@ class SendChatEmail implements ShouldQueue
             $threadIds = self::threadIdsOf($ids);
             $newest = self::newestThread($threadIds);
             $conversation = $newest ? Conversation::find($newest->conversation_id) : null;
+
+            if ($conversation && self::mergedIntoAnotherVisitor($ids, $conversation)) {
+                self::failMerged($ids, $conversation);
+
+                return;
+            }
 
             $reason = $conversation
                 ? $this->send($mailer, $conversation, $newest, $threadIds)
@@ -425,9 +441,7 @@ class SendChatEmail implements ShouldQueue
      */
     public static function failBatch(array $ids, int $from, ?Conversation $conversation, int $conversationId, string $reason): int
     {
-        $changed = Message::whereIn('id', $ids)
-            ->where('email_status', $from)
-            ->update(['email_status' => Message::EMAIL_FAILED]);
+        $changed = self::moveToFailed($ids, $from);
 
         if (!$changed) {
             return 0;
@@ -442,5 +456,50 @@ class SendChatEmail implements ShouldQueue
         }
 
         return $changed;
+    }
+
+    /**
+     * Whether some row of $ids belongs to a chat that was merged into
+     * $current, the thread's conversation now, and no browser holds both
+     * (Ruling P5). A target that is no website chat never gets them, as in
+     * PublishReplyToChat.
+     */
+    private static function mergedIntoAnotherVisitor(array $ids, Conversation $current): bool
+    {
+        $sources = Message::whereIn('id', $ids)->pluck('conversation_id')->unique();
+
+        foreach ($sources as $sourceId) {
+            if ((int) $sourceId === (int) $current->id) {
+                continue;
+            }
+
+            if (!WordPressChat::isWebsiteChat($current)
+                || !Visibility::oneVisitor((int) $sourceId, (int) $current->id)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * sending -> failed without an email, and $target gets the red item
+     * MergeChat writes for the rows a merge fails.
+     */
+    private static function failMerged(array $ids, Conversation $target): void
+    {
+        $changed = self::moveToFailed($ids, Message::EMAIL_SENDING);
+
+        if ($changed) {
+            FailureLineItem::create($target, MergeChat::failureText($changed));
+        }
+    }
+
+    /** $from -> failed, conditional on still being in $from. Returns the number of rows moved. */
+    private static function moveToFailed(array $ids, int $from): int
+    {
+        return Message::whereIn('id', $ids)
+            ->where('email_status', $from)
+            ->update(['email_status' => Message::EMAIL_FAILED]);
     }
 }
