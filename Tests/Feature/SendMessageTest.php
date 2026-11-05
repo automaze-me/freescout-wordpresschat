@@ -652,4 +652,18 @@ class SendMessageTest extends TestCase
 
         InboundMessage::receive($site, $session, 'Something else', 'race-0001');
     }
+
+    public function test_replay_lookup_ignores_outbound_rows()
+    {
+        $site = $this->makeSite();
+        $first = $this->send($site, ['text' => 'Hello there', 'client_message_id' => 'dir-0001']);
+        $inbound = $this->messageFrom($first);
+        $session = \Modules\WordPressChat\Entities\Session::find($inbound->session_id);
+
+        $this->assertNotNull(\Modules\WordPressChat\Services\InboundMessage::existing($session, 'dir-0001'));
+
+        Message::where('id', $inbound->id)->update(['direction' => Message::DIRECTION_OUT]);
+
+        $this->assertNull(\Modules\WordPressChat\Services\InboundMessage::existing($session, 'dir-0001'));
+    }
 }

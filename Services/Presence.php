@@ -3,7 +3,9 @@
 namespace Modules\WordPressChat\Services;
 
 use App\Conversation;
+use Illuminate\Support\Facades\DB;
 use Modules\WordPressChat\Entities\Access;
+use Modules\WordPressChat\Entities\ConversationState;
 use Modules\WordPressChat\Entities\Session;
 
 /**
@@ -62,31 +64,70 @@ class Presence
     }
 
     /**
-     * The line for agents, or null when no browser attached to the
-     * conversation ever polled.
+     * The line for agents, or null when no browser with a live grant on the
+     * conversation ever polled. One query: the polled sessions with their
+     * Access row and the conversation's state, newest poll first; the first
+     * that Visibility::grantFor() still grants counts (a browser that logged
+     * out of an account chat no longer does).
      */
     public static function line(Conversation $conversation): ?string
     {
-        $ids = Access::where('conversation_id', $conversation->id)->pluck('session_id')->all();
-        if (!$ids) {
-            return null;
+        $rows = DB::table((new Access())->getTable().' as a')
+            ->join((new Session())->getTable().' as s', 's.id', '=', 'a.session_id')
+            ->leftJoin((new ConversationState())->getTable().' as c', 'c.conversation_id', '=', 'a.conversation_id')
+            ->where('a.conversation_id', $conversation->id)
+            ->whereNotNull('s.last_seen_at')
+            ->orderBy('s.last_seen_at', 'desc')
+            ->orderBy('s.id', 'desc')
+            ->get([
+                'a.id as a_id', 'a.session_id as a_session_id', 'a.conversation_id as a_conversation_id',
+                'a.verified_at as a_verified_at',
+                's.id as s_id', 's.site_id as s_site_id', 's.wp_user_id as s_wp_user_id',
+                's.account_until as s_account_until', 's.identity as s_identity',
+                's.last_seen_at as s_last_seen_at', 's.page_path as s_page_path',
+                'c.wp_user_id as c_wp_user_id', 'c.site_id as c_site_id',
+                'c.cutoff_message_id as c_cutoff_message_id', 'c.cutoff_reason as c_cutoff_reason',
+            ]);
+
+        foreach ($rows as $row) {
+            $access = (new Access())->newFromBuilder([
+                'id'              => $row->a_id,
+                'session_id'      => $row->a_session_id,
+                'conversation_id' => $row->a_conversation_id,
+                'verified_at'     => $row->a_verified_at,
+            ]);
+            $session = (new Session())->newFromBuilder([
+                'id'            => $row->s_id,
+                'site_id'       => $row->s_site_id,
+                'wp_user_id'    => $row->s_wp_user_id,
+                'account_until' => $row->s_account_until,
+                'identity'      => $row->s_identity,
+                'last_seen_at'  => $row->s_last_seen_at,
+                'page_path'     => $row->s_page_path,
+            ]);
+            // A conversation without a state row yet: an unsaved blank one,
+            // so a plain chat is granted and nothing is written.
+            $state = (new ConversationState())->newFromBuilder([
+                'conversation_id'   => $conversation->id,
+                'wp_user_id'        => $row->c_wp_user_id,
+                'site_id'           => $row->c_site_id,
+                'cutoff_message_id' => $row->c_cutoff_message_id,
+                'cutoff_reason'     => $row->c_cutoff_reason,
+            ]);
+
+            if (Visibility::grantFor($access, $session, $state) === null) {
+                continue;
+            }
+
+            if ($session->last_seen_at->diffInSeconds(now(), false) <= self::ONLINE_SECONDS) {
+                return $session->page_path !== null && $session->page_path !== ''
+                    ? __('On the site now · :path', ['path' => $session->page_path])
+                    : __('On the site now');
+            }
+
+            return __('Left :when', ['when' => $session->last_seen_at->diffForHumans()]);
         }
 
-        $session = Session::whereIn('id', $ids)
-            ->whereNotNull('last_seen_at')
-            ->orderBy('last_seen_at', 'desc')
-            ->first();
-
-        if (!$session) {
-            return null;
-        }
-
-        if ($session->last_seen_at->diffInSeconds(now(), false) <= self::ONLINE_SECONDS) {
-            return $session->page_path !== null && $session->page_path !== ''
-                ? __('On the site now · :path', ['path' => $session->page_path])
-                : __('On the site now');
-        }
-
-        return __('Left :when', ['when' => $session->last_seen_at->diffForHumans()]);
+        return null;
     }
 }

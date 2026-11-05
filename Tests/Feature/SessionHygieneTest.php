@@ -467,4 +467,40 @@ class SessionHygieneTest extends TestCase
         unset($before['sessions'], $after['sessions']);
         $this->assertSame($before, $after);
     }
+
+    public function test_site_purge_deletes_links_in_batches()
+    {
+        $site = $this->makeSite();
+        $other = $this->makeSite(['url' => 'https://other.test/', 'origin' => 'https://other.test']);
+        $conversation = $this->startChat($site)['conversation'];
+        $keep = $this->mint($this->startChat($other)['conversation']);
+
+        $rows = [];
+        for ($i = 0; $i < 2500; $i++) {
+            $rows[] = [
+                'site_id'         => $site->id,
+                'conversation_id' => $conversation->id,
+                'token_hash'      => hash('sha256', 'bulk-'.$i),
+                'expires_at'      => now()->addDay(),
+            ];
+        }
+        foreach (array_chunk($rows, 500) as $chunk) {
+            Link::insert($chunk);
+        }
+        $this->assertSame(2500, Link::where('site_id', $site->id)->count());
+
+        $deletes = [];
+        \DB::listen(function ($query) use (&$deletes) {
+            if (preg_match('/^delete from [`"]wordpresschat_links[`"]/i', $query->sql)) {
+                $deletes[] = count($query->bindings);
+            }
+        });
+
+        $site->purgeVisitorData();
+
+        $this->assertSame(0, Link::where('site_id', $site->id)->count());
+        $this->assertNotNull($this->linkRow($keep));
+        $this->assertGreaterThanOrEqual(3, count($deletes));
+        $this->assertLessThanOrEqual(1000, max($deletes));
+    }
 }

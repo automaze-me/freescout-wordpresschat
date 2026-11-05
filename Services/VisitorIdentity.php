@@ -159,7 +159,7 @@ class VisitorIdentity
             // is in right now, not one another device of the account opened.
             $current = $locked->customer_id ? Customer::find($locked->customer_id) : null;
             $bind = null;
-            $open = InboundMessage::continuable($locked);
+            $open = Visibility::continuable($locked);
 
             if ($open
                 && $current
@@ -195,6 +195,11 @@ class VisitorIdentity
             })->all();
             $chats = ConversationState::where('site_id', $locked->site_id)
                 ->where('wp_user_id', $uid)
+                ->whereIn('conversation_id', function ($q) {
+                    $q->select('id')
+                        ->from((new Conversation())->getTable())
+                        ->where('state', Conversation::STATE_PUBLISHED);
+                })
                 ->pluck('conversation_id');
 
             foreach ($chats as $conversationId) {
@@ -254,7 +259,7 @@ class VisitorIdentity
 
     /**
      * After a send that carried a valid login token (Ruling P7): when that
-     * send's message started a conversation, which InboundMessage bound to
+     * send's message started a conversation, which the send bound to
      * the account, the conversation gets the account email as its
      * customer_email and the "Logged in as account" line item. login()
      * could not do this, as it ran before the conversation existed. A
@@ -405,7 +410,7 @@ class VisitorIdentity
 
     /**
      * The ids among $ids of conversations a visitor message would continue:
-     * published and not closed, as InboundMessage::continuable() decides.
+     * published and not closed, as Visibility::continuable() decides.
      *
      * @param int[] $ids
      * @return int[]

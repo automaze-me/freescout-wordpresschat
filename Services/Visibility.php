@@ -263,6 +263,69 @@ class Visibility
     }
 
     /**
+     * The conversation the browser is in (Visibility::latestConversation()),
+     * unless it was closed or is no longer published (deleted, merged away):
+     * then the next message starts a new conversation. Active, Pending and
+     * Spam ones continue, also after a cut-off (spec §6.4 rule 6). A
+     * conversation the session no longer sees (an account chat after the
+     * login lapsed) is never continued.
+     */
+    public static function continuable(Session $session): ?Conversation
+    {
+        return self::continuableFrom($session, self::latestConversation($session));
+    }
+
+    /**
+     * openOrNull() plus the declined-stale-chat rule: a fresh account
+     * session does not continue an anonymous chat that login declined to
+     * bind (VisitorIdentity::login() released its placeholder customer).
+     * The chat counts as such when it is not bound to an account, belongs
+     * to another customer than the session's, and the session is not
+     * verified on it. The next message then starts a new conversation.
+     */
+    public static function continuableFrom(Session $session, ?Conversation $latest): ?Conversation
+    {
+        $conversation = self::openOrNull($latest);
+
+        if (!$conversation || !$session->accountFresh()) {
+            return $conversation;
+        }
+
+        // A plain read: ConversationState::of() would create a row.
+        $state = ConversationState::where('conversation_id', $conversation->id)->first();
+
+        if ($state
+            && $state->wp_user_id === null
+            && (int) $conversation->customer_id !== (int) $session->customer_id
+            && !self::isVerified($session, $conversation)
+        ) {
+            return null;
+        }
+
+        return $conversation;
+    }
+
+    public static function openOrNull(?Conversation $conversation): ?Conversation
+    {
+        if (!$conversation
+            || $conversation->status == Conversation::STATUS_CLOSED
+            || $conversation->state != Conversation::STATE_PUBLISHED
+        ) {
+            return null;
+        }
+
+        return $conversation;
+    }
+
+    public static function isVerified(Session $session, Conversation $conversation): bool
+    {
+        return Access::where('session_id', $session->id)
+            ->where('conversation_id', $conversation->id)
+            ->whereNotNull('verified_at')
+            ->exists();
+    }
+
+    /**
      * The id latestConversation() returns, from resolve()'s result.
      */
     private static function currentId(Session $session, array $resolved): ?int

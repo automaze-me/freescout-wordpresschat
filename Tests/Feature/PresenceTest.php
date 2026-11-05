@@ -207,4 +207,38 @@ class PresenceTest extends TestCase
 
         $this->assertStringContainsString('X-Chat-Page', $response->headers->get('Access-Control-Allow-Headers'));
     }
+
+    public function test_a_browser_without_a_live_grant_is_not_shown()
+    {
+        $site = $this->makeSite();
+        $new = $this->newChatToken();
+        $chat = $this->startChat($site, 'Account chat', [
+            'new_token'   => $new,
+            'login_token' => $this->loginToken($site, $new),
+        ]);
+
+        $this->poll($site, $chat['token'], '/my-account');
+        $this->assertSame('On the site now · /my-account', Presence::line($chat['conversation']));
+
+        $this->api('POST', $site, '/logout', $chat['token'])->assertStatus(204);
+
+        $this->assertNotNull(Access::where('session_id', $chat['session']->id)->first());
+        $line = Presence::line($chat['conversation']);
+        $this->assertTrue($line === null || strpos($line, 'On the site now') === false, (string) $line);
+    }
+
+    public function test_line_runs_one_query()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site);
+        $this->poll($site, $chat['token'], '/a');
+
+        $queries = [];
+        \DB::listen(function ($query) use (&$queries) {
+            $queries[] = $query->sql;
+        });
+
+        $this->assertSame('On the site now · /a', Presence::line($chat['conversation']));
+        $this->assertCount(1, $queries, implode("\n", $queries));
+    }
 }

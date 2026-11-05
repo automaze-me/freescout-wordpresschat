@@ -694,4 +694,19 @@ class ContinueLinkTest extends TestCase
         $this->assertNull(Link::where('token_hash', hash('sha256', $link))->firstOrFail()->used_at);
         $this->assertSame(0, Access::where('session_id', $chat['session']->id)->whereNotNull('verified_at')->count());
     }
+
+    public function test_retry_after_the_conversation_is_trashed_is_410()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site);
+        $link = $this->mint($chat['conversation']);
+
+        $new = $this->newChatToken();
+        $this->api('POST', $site, '/continue', null, ['link' => $link, 'new_token' => $new])->assertStatus(200);
+
+        Conversation::where('id', $chat['conversation']->id)->update(['state' => Conversation::STATE_DELETED]);
+
+        $this->api('POST', $site, '/continue', $new, ['link' => $link])
+            ->assertStatus(410)->assertExactJson(['error' => 'link_invalid']);
+    }
 }

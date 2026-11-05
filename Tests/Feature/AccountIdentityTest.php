@@ -715,4 +715,44 @@ class AccountIdentityTest extends TestCase
         $this->assertSame([], $this->poll($other, $token)['messages']);
         $this->assertSame(1, Access::where('session_id', $foreign->id)->count());
     }
+
+    /** Plan 6 Task 5: a trashed account chat is never granted by a login. */
+    public function test_login_grants_no_access_on_a_trashed_account_chat()
+    {
+        $site = $this->makeSite();
+        $trashed = $this->startAccountChat($site, 'Trashed chat');
+
+        // Closing the first chat makes the next message open a second one.
+        Conversation::where('id', $trashed['conversation']->id)->update(['status' => Conversation::STATUS_CLOSED]);
+        $sent = $this->say($site, $trashed['token'], 'Live chat');
+        $sent->assertStatus(201);
+        $a = ['conversation' => Conversation::find(Message::find($sent->json()['message']['id'])->conversation_id)];
+        $this->assertNotSame((int) $a['conversation']->id, (int) $trashed['conversation']->id);
+        $this->assertSame(42, (int) $this->stateOf($a['conversation'])->wp_user_id);
+        $this->assertSame(42, (int) $this->stateOf($trashed['conversation'])->wp_user_id);
+
+        Conversation::where('id', $trashed['conversation']->id)->update(['state' => Conversation::STATE_DELETED]);
+
+        $newB = $this->newChatToken();
+        $this->api('POST', $site, '/identity', null, [
+            'login_token' => $this->loginToken($site, $newB),
+            'new_token'   => $newB,
+        ])->assertStatus(200);
+
+        $b = Session::where('token_hash', hash('sha256', $newB))->firstOrFail();
+        $this->assertSame(0, Access::where('session_id', $b->id)
+            ->where('conversation_id', $trashed['conversation']->id)->count());
+        $this->assertSame(1, Access::where('session_id', $b->id)
+            ->where('conversation_id', $a['conversation']->id)->count());
+
+        $key = $this->stateOf($a['conversation'])->public_id;
+        $this->assertSame($key, $this->api('GET', $site, '/messages', $newB)->json()['conversation']['key']);
+    }
+
+    public function test_visitor_identity_does_not_reference_inbound_message()
+    {
+        $source = file_get_contents(__DIR__.'/../../Services/VisitorIdentity.php');
+
+        $this->assertStringNotContainsString('InboundMessage', $source);
+    }
 }

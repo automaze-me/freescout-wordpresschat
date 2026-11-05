@@ -135,7 +135,7 @@ class IdentityToken
         }
 
         $body = substr($token, strlen(self::PREFIX));
-        if (!preg_match('/^[A-Za-z0-9_-]+$/', $body)) {
+        if (!preg_match('/\A[A-Za-z0-9_-]+\z/', $body)) {
             return null;
         }
 

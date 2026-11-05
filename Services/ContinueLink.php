@@ -81,8 +81,8 @@ class ContinueLink
 
     /**
      * Whether $token names a link of $site that $session already redeemed
-     * (a retry after a lost answer) and that has not expired since: an
-     * expired link answers 410 like any other. Read only.
+     * (a retry after a lost answer) and that has not expired since, and whose
+     * conversation is not trashed: either answers 410 like any other. Read only.
      */
     public static function usedBy(Site $site, string $token, Session $session): bool
     {
@@ -90,6 +90,11 @@ class ContinueLink
             ->where('site_id', $site->id)
             ->where('used_by_session_id', $session->id)
             ->where('expires_at', '>', now())
+            ->whereIn('conversation_id', function ($q) {
+                $q->select('id')
+                    ->from((new Conversation())->getTable())
+                    ->where('state', Conversation::STATE_PUBLISHED);
+            })
             ->exists();
     }
 

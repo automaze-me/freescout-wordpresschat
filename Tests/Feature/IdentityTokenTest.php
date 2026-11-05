@@ -254,4 +254,25 @@ class IdentityTokenTest extends TestCase
         $this->assertStringContainsString(e(__("The secret can't be read (the FreeScout app key changed?). Regenerate it and update the WordPress plugin.")), $html);
         $this->assertStringNotContainsString('id="wpc-secret"', $html);
     }
+
+    public function test_token_with_trailing_newline_is_rejected()
+    {
+        $site = $this->vectorSite();
+
+        $this->assertNull($this->openLogin($site, self::LOGIN_VECTOR."\n"));
+        $this->assertNotNull($this->openLogin($site, self::LOGIN_VECTOR));
+    }
+
+    public function test_unreadable_secret_warns_once()
+    {
+        $site = $this->vectorSite();
+        DB::table('wordpresschat_sites')->where('id', $site->id)->update(['secret' => 'garbage']);
+        $site = Site::find($site->id);
+        \Cache::forget('wordpresschat.secret_warned.'.$site->id);
+
+        \Log::shouldReceive('warning')->once();
+
+        $this->assertNull($site->secretOrNull());
+        $this->assertNull($site->secretOrNull());
+    }
 }

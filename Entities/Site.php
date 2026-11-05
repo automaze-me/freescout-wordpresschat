@@ -11,6 +11,9 @@ class Site extends Model
     /** Sessions deleted per transaction by purgeVisitorData(). */
     const PURGE_BATCH = 500;
 
+    /** Continue links deleted per statement when a site is purged. */
+    const LINK_PURGE_BATCH = 1000;
+
     protected $table = 'wordpresschat_sites';
 
     protected $guarded = ['id'];
@@ -36,7 +39,11 @@ class Site extends Model
         }
 
         if (!is_string($secret) || $secret === '') {
-            \Log::warning('WordPressChat: the secret of website #'.$this->id.' cannot be read (the app key changed?). Regenerate it.');
+            // Once an hour per website: every poll of every visitor would
+            // otherwise write the same line.
+            if (\Cache::add('wordpresschat.secret_warned.'.$this->id, 1, 3600)) {
+                \Log::warning('WordPressChat: the secret of website #'.$this->id.' cannot be read (the app key changed?). Regenerate it.');
+            }
 
             return null;
         }
@@ -92,7 +99,14 @@ class Site extends Model
             });
         } while ($count > 0);
 
-        Link::where('site_id', $siteId)->delete();
+        // Ids first, then a delete by id: PostgreSQL has no DELETE ... LIMIT.
+        do {
+            $ids = Link::where('site_id', $siteId)->limit(self::LINK_PURGE_BATCH)->pluck('id')->all();
+
+            if ($ids) {
+                Link::whereIn('id', $ids)->delete();
+            }
+        } while (count($ids) === self::LINK_PURGE_BATCH);
 
         // toBase(): no updated_at, so no state looks touched.
         ConversationState::where('site_id', $siteId)->toBase()->update(['site_id' => 0]);

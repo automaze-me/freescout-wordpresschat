@@ -245,4 +245,18 @@ class SchemaGuardTest extends TestCase
             SchemaGuard::$table = 'migrations';
         }
     }
+
+    public function test_links_table_has_a_site_id_index()
+    {
+        $indexes = \DB::connection()->getDoctrineSchemaManager()->listTableIndexes('wordpresschat_links');
+        $found = false;
+
+        foreach ($indexes as $index) {
+            if ($index->getColumns() === ['site_id']) {
+                $found = true;
+            }
+        }
+
+        $this->assertTrue($found, 'No index on wordpresschat_links.site_id');
+    }
 }
