@@ -7,6 +7,8 @@ use PHPUnit\Framework\TestCase;
 /** Every user-facing string of the module has a German translation. */
 class TranslationsTest extends TestCase
 {
+    const JSON_BLIND = '<Laravel 5.5 reads no JSON here; use __() (plural: trans_choice(__(\'…|…\'), $n)):';
+
     private function moduleRoot(): string
     {
         return dirname(__DIR__, 2);
@@ -53,9 +55,15 @@ class TranslationsTest extends TestCase
 
             if (substr($relative, -10) === '.blade.php') {
                 // Blade is mostly HTML: scan the literals with a regex.
-                if (preg_match_all('/(?<![\w>:$])(?:__|trans|trans_choice|@lang)\(\s*(?:([\'"])((?:\\\\.|(?!\1).)*)\1)/s', $code, $m)) {
-                    foreach ($m[2] as $index => $key) {
-                        $keys[$m[1][$index] === "'" ? str_replace(["\\\\", "\\'"], ["\\", "'"], $key) : stripcslashes($key)] = $relative;
+                // __() and @lang() read JSON; trans(), trans_choice() and @choice() do not.
+                if (preg_match_all('/(?<![\w$])(?<!->)(?<!::)(__|trans_choice|trans|@lang|@choice)\(\s*(?:([\'"])((?:\\\\.|(?!\2).)*)\2)/s', $code, $m)) {
+                    foreach ($m[3] as $index => $key) {
+                        $key = $m[2][$index] === "'" ? str_replace(["\\\\", "\\'"], ["\\", "'"], $key) : stripcslashes($key);
+                        if (in_array($m[1][$index], ['__', '@lang'], true)) {
+                            $keys[$key] = $relative;
+                        } else {
+                            $keys[self::JSON_BLIND.' '.$m[1][$index].'(\''.$key.'\') in '.$relative] = $relative;
+                        }
                     }
                 }
                 continue;
@@ -64,8 +72,14 @@ class TranslationsTest extends TestCase
             $tokens = token_get_all($code);
             $count = count($tokens);
             for ($i = 0; $i < $count; $i++) {
-                if (!is_array($tokens[$i]) || $tokens[$i][0] !== T_STRING
-                    || !in_array($tokens[$i][1], ['__', 'trans', 'trans_choice'], true)) {
+                if (!is_array($tokens[$i])) {
+                    continue;
+                }
+                // PHP 8 reads \__('x') as one T_NAME_FULLY_QUALIFIED token.
+                $isName = $tokens[$i][0] === T_STRING
+                    || (defined('T_NAME_FULLY_QUALIFIED') && $tokens[$i][0] === constant('T_NAME_FULLY_QUALIFIED'));
+                $name = ltrim($tokens[$i][1], '\\');
+                if (!$isName || !in_array($name, ['__', 'trans', 'trans_choice'], true)) {
                     continue;
                 }
                 // Skip method calls such as ->trans( and ::trans(.
@@ -101,10 +115,14 @@ class TranslationsTest extends TestCase
                     }
                     break;
                 }
-                if ($found) {
+                if ($found && $name === '__') {
                     $keys[$key] = $relative;
-                } elseif ($tokens[$i][1] !== 'trans_choice') {
-                    // trans_choice($line, $n) with a variable: the $line came from __().
+                } elseif ($found) {
+                    // trans() and trans_choice() never read JSON in Laravel 5.5.
+                    $keys[self::JSON_BLIND.' '.$name.'(\''.$key.'\') in '.$relative.':'.$tokens[$i][2]] = $relative;
+                } elseif ($name !== 'trans_choice') {
+                    // trans_choice($var, $n) and trans_choice(__('…|…'), $n) are
+                    // trusted: the first argument is translated by __() elsewhere.
                     $keys['<non-literal in '.$relative.':'.$tokens[$i][2].'>'] = $relative;
                 }
             }

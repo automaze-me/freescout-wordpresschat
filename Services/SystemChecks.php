@@ -58,7 +58,7 @@ class SystemChecks
             return ['label' => __('WebP detection'), 'ok' => true, 'detail' => __('WebP images are recognized, so visitors can send them.')];
         }
 
-        return ['label' => __('WebP detection'), 'ok' => false, 'detail' => __('This server does not recognize WebP images (finfo answered :mime). Visitors cannot attach them.', ['mime' => $mime ?: 'nothing'])];
+        return ['label' => __('WebP detection'), 'ok' => false, 'detail' => __('This server does not recognize WebP images (finfo answered :mime). Visitors cannot attach them.', ['mime' => $mime ?: __('nothing')])];
     }
 
     protected static function uploadLimits(): array
