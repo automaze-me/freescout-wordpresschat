@@ -380,6 +380,16 @@ class DeliveryFailureTest extends TestCase
         $conversation->status = Conversation::STATUS_PENDING;
         $conversation->save();
         $reply = $this->agentThread($conversation, 5);
+        // The reply went out by email: the gate for a bounce item.
+        Message::create([
+            'conversation_id' => $conversation->id,
+            'thread_id'       => $reply->id,
+            'direction'       => Message::DIRECTION_OUT,
+            'via'             => Message::VIA_CHAT,
+            'published_at'    => now()->subMinutes(5),
+            'email_status'    => Message::EMAIL_SENT,
+            'email_thread_id' => $reply->id,
+        ]);
 
         $bounce = $this->coreBounce($conversation->mailbox, $reply);
 

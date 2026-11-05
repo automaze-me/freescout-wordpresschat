@@ -5,6 +5,7 @@ namespace Modules\WordPressChat\Listeners;
 use App\Conversation;
 use App\SendLog;
 use App\Thread;
+use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\WordPressChat;
 
 /**
@@ -29,6 +30,9 @@ use Modules\WordPressChat\WordPressChat;
  */
 class RecordBounce
 {
+    /** Meta on the bounced reply thread: its bounce item was written. */
+    const BOUNCE_META = 'wordpresschat.bounce_noted';
+
     public static function handle($log): void
     {
         try {
@@ -57,7 +61,31 @@ class RecordBounce
                 }
             }
 
-            RecordCustomerEmail::noteBounce($conversation);
+            // Only a reply that was sent by email can bounce. Anything else
+            // is a forged or stray DSN.
+            $sent = Message::where('email_thread_id', $thread->id)
+                ->where('email_status', Message::EMAIL_SENT)
+                ->exists();
+
+            if (!$sent || $thread->getMeta(self::BOUNCE_META)) {
+                return;
+            }
+
+            $thread->setMeta(self::BOUNCE_META, true);
+            $thread->save();
+
+            $recipients = SendLog::where('thread_id', $thread->id)
+                ->where('status', SendLog::STATUS_ACCEPTED)
+                ->pluck('email')
+                ->map(function ($email) {
+                    return trim((string) $email);
+                })
+                ->filter()
+                ->unique()
+                ->values()
+                ->all();
+
+            RecordCustomerEmail::noteBounce($conversation, $recipients);
         } catch (\Throwable $e) {
             \Log::error('[WordPressChat] RecordBounce: listener failed', [
                 'thread_id' => is_object($log) ? ($log->thread_id ?? null) : null,

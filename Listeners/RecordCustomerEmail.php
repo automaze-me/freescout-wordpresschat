@@ -123,9 +123,18 @@ class RecordCustomerEmail
      * empty (DueEmails::address(), the job's own choice). With no address at
      * all it says so without one, never "The email to  bounced".
      */
-    public static function noteBounce(Conversation $conversation): void
+    public static function noteBounce(Conversation $conversation, array $recipients = []): void
     {
-        $email = DueEmails::address($conversation);
+        if (count($recipients) > 1) {
+            FailureLineItem::create($conversation, __(
+                'The email to :emails bounced. At least one of these addresses may not have received the reply.',
+                ['emails' => implode(', ', $recipients)]
+            ));
+
+            return;
+        }
+
+        $email = count($recipients) === 1 ? $recipients[0] : DueEmails::address($conversation);
 
         if ($email === null) {
             $email = trim((string) $conversation->customer_email);
