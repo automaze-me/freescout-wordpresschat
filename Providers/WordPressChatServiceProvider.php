@@ -119,6 +119,7 @@ class WordPressChatServiceProvider extends ServiceProvider
         // Every batch reply's files, not only the newest's (Ruling E10).
         \Eventy::addAction('email.reply_to_customer.swiftmessage', function ($swiftmessage, $fromAlias = null, $thread = null, $mailbox = null) {
             \Modules\WordPressChat\Services\ChatEmail::attachBatchFiles($swiftmessage, $thread);
+            \Modules\WordPressChat\Services\ChatEmail::threadToPreviousEmail($swiftmessage, $thread, $mailbox);
         }, 20, 4);
 
         // Manage -> Website Chat (admins only).

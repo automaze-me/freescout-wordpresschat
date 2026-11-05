@@ -102,6 +102,10 @@ No link is included, and the email still goes out, when it would also reach othe
 reply has a Cc or Bcc, or when the mailbox has an automatic Bcc. The link is only
 ever sent to the conversation's own address, so it does not go to anyone else.
 
+A fallback email that cannot be sent is tried up to five times over about 2 hours 20 minutes, like
+core's replies. If it still fails, the agent sees a short reason in the conversation ("the mail
+server refused the login (SMTP 535)", say); the log keeps the full error.
+
 Agents can also choose **Email** in the reply picker above the Send button to send a particular
 reply by email at once.
 

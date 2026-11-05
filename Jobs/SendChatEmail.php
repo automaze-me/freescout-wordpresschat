@@ -352,10 +352,38 @@ class SendChatEmail implements ShouldQueue
         ChatEmail::begin((int) $conversation->id, $threadIds, $link);
 
         try {
-            return $mailer->send($conversation, $this->replies($conversation, $newest), $customer);
+            $reason = $mailer->send($conversation, $this->replies($conversation, $newest), $customer);
         } finally {
             ChatEmail::end();
         }
+
+        if ($reason === null) {
+            self::logAccepted($newest, $conversation, $customer, $address);
+        }
+
+        return $reason;
+    }
+
+    /**
+     * Core's send log lists the thread's To, Cc and Bcc addresses, and a
+     * chat reply has no To (Ruling P6): without a row here the agent UI
+     * shows no delivery status. The thread's To stays empty. Never throws:
+     * SendLog::log() catches its own save errors.
+     */
+    private static function logAccepted(Thread $newest, Conversation $conversation, $customer, string $address): void
+    {
+        if ($newest->getToArray() || !$conversation->mailbox) {
+            return;
+        }
+
+        SendLog::log(
+            $newest->id,
+            $newest->getMessageId($conversation->mailbox),
+            $address,
+            SendLog::MAIL_TYPE_EMAIL_TO_CUSTOMER,
+            SendLog::STATUS_ACCEPTED,
+            $customer->id
+        );
     }
 
     /**
@@ -410,11 +438,16 @@ class SendChatEmail implements ShouldQueue
         $attempt = max(1, (int) $this->attempts());
 
         if ($attempt < self::TRIES) {
+            $delay = self::BACKOFF[min($attempt, count(self::BACKOFF)) - 1];
+
+            \Log::warning('[WordPressChat] Fallback email for conversation #'.$this->conversationId
+                .': fallback email attempt '.$attempt.' of '.self::TRIES.' failed, retrying in '.$delay.' s: '.$e->getMessage());
+
             Message::whereIn('id', $ids)
                 ->where('email_status', Message::EMAIL_SENDING)
                 ->update(['email_status' => Message::EMAIL_QUEUED]);
 
-            $this->release(self::BACKOFF[min($attempt, count(self::BACKOFF)) - 1]);
+            $this->release($delay);
 
             return;
         }
@@ -448,14 +481,51 @@ class SendChatEmail implements ShouldQueue
         }
 
         $conversation = $conversation ?: Conversation::find($conversationId);
+        $friendly = self::friendly($reason);
+
+        if ($friendly !== mb_substr($reason, 0, self::REASON_LENGTH)) {
+            // The agent sees the short reason; the log keeps the full error.
+            \Log::error('[WordPressChat] Fallback email for conversation #'.$conversationId.' failed: '.$reason);
+        }
 
         if ($conversation) {
             FailureLineItem::create($conversation, __('Email to the visitor failed: :reason', [
-                'reason' => mb_substr($reason, 0, self::REASON_LENGTH),
+                'reason' => $friendly,
             ]));
         }
 
         return $changed;
+    }
+
+    /**
+     * The reason an agent reads for a raw failure message: the SMTP code or
+     * the connection failure in plain words, otherwise the message itself,
+     * cut to REASON_LENGTH characters. Every failure path goes through
+     * failBatch(), which applies it.
+     */
+    public static function friendly(string $raw): string
+    {
+        if (preg_match('/but got code "(\d{3})"/', $raw, $m)) {
+            $code = $m[1];
+
+            if (in_array($code, ['535', '534', '530'], true)) {
+                return __('the mail server refused the login (SMTP :code)', ['code' => $code]);
+            }
+
+            if ($code >= '550' && $code <= '554') {
+                return __("the visitor's mail server rejected the address (SMTP :code)", ['code' => $code]);
+            }
+
+            if ($code[0] === '4') {
+                return __('the mail server is not accepting email right now (SMTP :code)', ['code' => $code]);
+            }
+        }
+
+        if (strpos($raw, 'Connection could not be established') !== false) {
+            return __('the mail server could not be reached');
+        }
+
+        return mb_substr($raw, 0, self::REASON_LENGTH);
     }
 
     /**

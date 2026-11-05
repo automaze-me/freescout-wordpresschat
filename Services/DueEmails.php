@@ -106,6 +106,7 @@ class DueEmails
         // sweep would queue them again, every minute for the whole window.
         $rows = Message::query()
             ->join('threads', 'threads.id', '=', 'wordpresschat_messages.thread_id')
+            ->join('conversations', 'conversations.id', '=', 'wordpresschat_messages.conversation_id')
             ->where('wordpresschat_messages.direction', Message::DIRECTION_OUT)
             ->where('wordpresschat_messages.via', Message::VIA_CHAT)
             ->whereNotNull('wordpresschat_messages.published_at')
@@ -114,6 +115,16 @@ class DueEmails
             ->whereNull('wordpresschat_messages.lost_at')
             ->whereBetween('wordpresschat_messages.fallback_due_at', [$now->copy()->subDays(self::WINDOW_DAYS), $now])
             ->where('threads.state', Thread::STATE_PUBLISHED)
+            // A coarse address filter, so an anonymous chat is not loaded
+            // every minute; address() stays the final gate.
+            ->where(function ($q) {
+                $q->where('conversations.customer_email', 'like', '%@%')
+                    ->orWhereExists(function ($sub) {
+                        $sub->select(DB::raw(1))
+                            ->from('emails')
+                            ->whereColumn('emails.customer_id', 'conversations.customer_id');
+                    });
+            })
             ->orderBy('wordpresschat_messages.id')
             ->get([
                 'wordpresschat_messages.id',

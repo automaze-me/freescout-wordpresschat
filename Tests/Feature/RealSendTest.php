@@ -117,7 +117,7 @@ class RealSendTest extends TestCase
      * ago. To is set as core's reply form sets it (the conversation's
      * customer_email); core's send log lists the To, Cc and Bcc recipients.
      */
-    private function reply(Conversation $conversation, string $text): array
+    private function reply(Conversation $conversation, string $text, bool $withTo = true): array
     {
         $agent = $this->adminUser();
 
@@ -132,7 +132,9 @@ class RealSendTest extends TestCase
         $thread->customer_id        = $conversation->customer_id;
         $thread->user_id            = $agent->id;
         $thread->created_by_user_id = $agent->id;
-        $thread->setTo($conversation->customer_email);
+        if ($withTo) {
+            $thread->setTo($conversation->customer_email);
+        }
         $thread->save();
 
         \Eventy::action('chat_conversation.send_reply', $conversation, collect([$thread]), $conversation->customer);
@@ -400,5 +402,74 @@ class RealSendTest extends TestCase
         }
         $this->assertCount(1, $swift->getChildren());
         $this->assertSame('invoice-1.pdf', $swift->getChildren()[0]->getFilename());
+    }
+
+    /** Sweeps and sends the due batch through the real mailer; returns the captured message. */
+    private function sendDue(): array
+    {
+        foreach (['args', 'message.eml'] as $file) {
+            if (is_file($this->dir.'/'.$file)) {
+                unlink($this->dir.'/'.$file);
+            }
+        }
+
+        Queue::fake();
+        $this->assertSame(1, DueEmails::sweep());
+        app()->call([Queue::pushed(SendChatEmail::class)->first(), 'handle']);
+
+        return $this->captured();
+    }
+
+    /** The second fallback email answers the first (Message-ID in In-Reply-To and References). */
+    public function test_second_fallback_email_threads_to_the_first()
+    {
+        list($site, $conversation, $mailbox) = $this->chat();
+        $this->reply($conversation, 'First batch.');
+
+        list($first) = $this->sendDue();
+        $this->assertArrayNotHasKey('in-reply-to', $first);
+        $this->assertArrayNotHasKey('references', $first);
+        $firstId = $first['message-id'][0];
+
+        $this->reply($conversation, 'Second batch.');
+        list($second) = $this->sendDue();
+
+        $this->assertSame($firstId, $second['in-reply-to'][0]);
+        $this->assertSame($firstId, $second['references'][0]);
+        $this->assertNotSame($firstId, $second['message-id'][0]);
+    }
+
+    /** The agent UI shows the empty To; the send log still records the address. */
+    public function test_successful_fallback_writes_a_send_log_row()
+    {
+        list($site, $conversation, $mailbox) = $this->chat();
+        list($r1, $row1) = $this->reply($conversation, 'No To on this one.', false);
+        $this->assertSame([], Thread::find($r1->id)->getToArray());
+
+        $this->sendDue();
+
+        $log = SendLog::where('thread_id', $r1->id)->get();
+        $this->assertCount(1, $log);
+        $this->assertSame('anna@example.test', $log[0]->email);
+        $this->assertSame(SendLog::STATUS_ACCEPTED, (int) $log[0]->status);
+        $this->assertSame($r1->getMessageId($mailbox), $log[0]->message_id);
+        $this->assertSame((int) $conversation->customer_id, (int) $log[0]->customer_id);
+        $this->assertSame([], Thread::find($r1->id)->getToArray());
+        $this->assertSame(Message::EMAIL_SENT, (int) $row1->fresh()->email_status);
+    }
+
+    /** Core returns early for a draft or an already accepted thread; the mailer reads that as not sent. */
+    public function test_core_early_returns_read_as_not_sent()
+    {
+        list($site, $conversation, $mailbox) = $this->chat();
+        list($r1) = $this->reply($conversation, 'Undone reply.');
+        $mailer = app(CoreReplyMailer::class);
+
+        Thread::where('id', $r1->id)->update(['state' => Thread::STATE_DRAFT]);
+        $this->assertSame('not sent', $mailer->send($conversation, collect([Thread::find($r1->id)]), $conversation->customer));
+
+        Thread::where('id', $r1->id)->update(['state' => Thread::STATE_PUBLISHED, 'send_status' => SendLog::STATUS_ACCEPTED]);
+        $this->assertNull($mailer->send($conversation, collect([Thread::find($r1->id)]), $conversation->customer));
+        $this->assertFileDoesNotExist($this->dir.'/message.eml');
     }
 }

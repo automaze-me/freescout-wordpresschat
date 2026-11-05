@@ -441,6 +441,7 @@ class FallbackEmailTest extends TestCase
 
         $this->assertSame(1, DueEmails::sweep());
         $mailer = $this->fake(new \RuntimeException('Connection could not be established'));
+        \Log::spy();
 
         $first = $this->pushedJob();
         $first->setJob($this->queueJob(1, 300));
@@ -466,9 +467,20 @@ class FallbackEmailTest extends TestCase
         $items = $this->failureItems($conversation);
         $this->assertCount(1, $items);
         $this->assertSame(
-            'Email to the visitor failed: Connection could not be established',
+            'Email to the visitor failed: the mail server could not be reached',
             $items[0]->getActionText('', false)
         );
+
+        // One warning per non-final attempt, with the raw error.
+        \Log::shouldHaveReceived('warning')->twice();
+        \Log::shouldHaveReceived('warning')->atLeast()->once()->withArgs(function ($message) use ($conversation) {
+            return strpos($message, 'fallback email attempt 1 of 5 failed, retrying in 300 s') !== false
+                && strpos($message, 'Connection could not be established') !== false
+                && strpos($message, '#'.$conversation->id) !== false;
+        });
+        \Log::shouldHaveReceived('warning')->atLeast()->once()->withArgs(function ($message) {
+            return strpos($message, 'attempt 2 of 5 failed, retrying in 900 s') !== false;
+        });
     }
 
     /**
@@ -791,5 +803,108 @@ class FallbackEmailTest extends TestCase
         $this->assertTrue($events[0]->withoutOverlapping);
         // A sweep killed mid-run must not stop fallback emails for a day.
         $this->assertSame(5, $events[0]->expiresAt);
+    }
+
+    public static function failureReasons(): array
+    {
+        return [
+            'login 535'     => ['Expected response code 250 but got code "535", with message "535 Authentication failed"', 'the mail server refused the login (SMTP 535)'],
+            'login 534'     => ['Expected response code 250 but got code "534", with message "x"', 'the mail server refused the login (SMTP 534)'],
+            'login 530'     => ['Expected response code 250 but got code "530", with message "x"', 'the mail server refused the login (SMTP 530)'],
+            'rejected 550'  => ['Expected response code 250 but got code "550", with message "550 No such user"', "the visitor's mail server rejected the address (SMTP 550)"],
+            'rejected 554'  => ['Expected response code 250 but got code "554", with message "x"', "the visitor's mail server rejected the address (SMTP 554)"],
+            'transient 421' => ['Expected response code 250 but got code "421", with message "x"', 'the mail server is not accepting email right now (SMTP 421)'],
+            'transient 452' => ['Expected response code 250 but got code "452", with message "x"', 'the mail server is not accepting email right now (SMTP 452)'],
+            'unreachable'   => ['Connection could not be established with host smtp.example.test [Connection refused #111]', 'the mail server could not be reached'],
+            'other code'    => ['Expected response code 250 but got code "500", with message "x"', 'Expected response code 250 but got code "500", with message "x"'],
+            'anything else' => ['Something odd happened', 'Something odd happened'],
+        ];
+    }
+
+    /**
+     * @dataProvider failureReasons
+     */
+    public function test_failure_reason_is_readable(string $raw, string $reason)
+    {
+        $this->assertSame($reason, SendChatEmail::friendly($raw));
+
+        list(, , $conversation) = $this->chat();
+        $this->reply($conversation);
+        Queue::fake();
+        $this->assertSame(1, DueEmails::sweep());
+        $this->fake($raw);
+        \Log::spy();
+
+        $this->runJob($this->pushedJob());
+
+        $items = $this->failureItems($conversation);
+        $this->assertCount(1, $items);
+        $this->assertSame('Email to the visitor failed: '.$reason, $items[0]->getActionText('', false));
+
+        if ($reason !== $raw) {
+            \Log::shouldHaveReceived('error')->withArgs(function ($message) use ($raw) {
+                return strpos($message, $raw) !== false;
+            })->once();
+        }
+    }
+
+    public function test_long_unmatched_reason_is_cut()
+    {
+        $this->assertSame(str_repeat('x', 200), SendChatEmail::friendly(str_repeat('x', 500)));
+    }
+
+    public function test_failure_reason_is_translated()
+    {
+        $locale = app()->getLocale();
+        try {
+            \Helper::setLocale('de');
+            $this->assertSame('der Mailserver hat die Anmeldung abgelehnt (SMTP 535)', SendChatEmail::friendly('but got code "535"'));
+        } finally {
+            app()->setLocale($locale);
+        }
+    }
+
+    /** An anonymous chat is excluded by the sweep's own query, with no customer or email lookup. */
+    public function test_anonymous_conversation_is_not_reloaded_each_minute()
+    {
+        list(, , $conversation) = $this->chat('');
+        $this->reply($conversation);
+        Queue::fake();
+
+        $lookups = [];
+        \DB::listen(function ($query) use (&$lookups) {
+            if (preg_match('/^select [^()]*? from [`"]?(customers|emails)[`"]?[\s]/i', $query->sql)) {
+                $lookups[] = $query->sql;
+            }
+        });
+
+        $this->assertSame(0, DueEmails::sweep());
+
+        $this->assertSame([], $lookups);
+        Queue::assertNotPushed(SendChatEmail::class);
+    }
+
+    /** A customer with an email row but an empty conversation address still gets the email. */
+    public function test_customer_email_row_qualifies_an_empty_conversation_address()
+    {
+        list(, , $conversation) = $this->chat('');
+        $this->reply($conversation);
+        \App\Email::create('anna@example.test', $conversation->customer_id);
+        Queue::fake();
+
+        $this->assertSame(1, DueEmails::sweep());
+    }
+
+    public function test_sweep_skips_unpublished_threads()
+    {
+        list(, , $conversation) = $this->chat();
+        list($thread, $row) = $this->reply($conversation);
+        Thread::where('id', $thread->id)->update(['state' => Thread::STATE_DRAFT]);
+        Queue::fake();
+
+        $this->assertSame(0, DueEmails::sweep());
+
+        $this->assertNull($this->emailStatus($row));
+        Queue::assertNotPushed(SendChatEmail::class);
     }
 }

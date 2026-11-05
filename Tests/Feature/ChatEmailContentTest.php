@@ -131,4 +131,32 @@ class ChatEmailContentTest extends TestCase
 
         $this->assertStringContainsString("I'm here", $this->renderEmail($c, $threads)['text']);
     }
+
+    public function test_link_with_ampersand()
+    {
+        $link = 'https://shop.test/?a=1&b=2#lcff-continue=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+        $c  = $this->chat();
+        $r1 = $this->reply($c, 'Reply one');
+        ChatEmail::begin($c->id, [$r1->id], $link);
+
+        $out = $this->renderEmail($c, collect([$r1]));
+
+        $this->assertStringContainsString('href="https://shop.test/?a=1&amp;b=2#lcff-continue=', $out['html']);
+        $this->assertStringContainsString("Continue this chat on the website:\n".$link, str_replace("\r\n", "\n", $out['text']));
+    }
+
+    public function test_text_link_sits_above_the_branding()
+    {
+        \App\Option::set('email_branding', true);
+        $c  = $this->chat();
+        $r1 = $this->reply($c, 'Reply one');
+        ChatEmail::begin($c->id, [$r1->id], self::LINK);
+
+        $text = str_replace("\r\n", "\n", $this->renderEmail($c, collect([$r1]))['text']);
+
+        $this->assertStringContainsString('Support powered by', $text);
+        $this->assertSame(1, substr_count($text, self::LINK));
+        $this->assertLessThan(strpos($text, 'Support powered by'), strpos($text, self::LINK));
+        $this->assertGreaterThan(strpos($text, 'Reply one'), strpos($text, self::LINK));
+    }
 }
