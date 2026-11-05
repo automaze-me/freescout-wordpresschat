@@ -1,0 +1,37 @@
+name: Release
+
+# On a version tag (e.g. v1.0.0), build the install zip and publish a GitHub Release.
+# The zip contains a top-level WordPressChat/ folder so users extract it straight
+# into FreeScout's Modules/ directory (-> Modules/WordPressChat/). FreeScout's
+# in-app updater finds new versions via module.json's latestVersionUrl and pulls
+# the zip from latestVersionZipUrl (releases/latest/download/WordPressChat.zip),
+# which always points at the newest release's asset.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build module zip
+        # git archive honors export-ignore in .gitattributes (Tests, phpunit.xml,
+        # .github, ... stay out of the install zip) and prefixes every entry with
+        # WordPressChat/ so it unpacks to Modules/WordPressChat/.
+        run: git archive --format=zip --prefix=WordPressChat/ -o WordPressChat.zip HEAD
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" WordPressChat.zip \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
