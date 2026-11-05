@@ -24,6 +24,8 @@ class WordPressChatServiceProvider extends ServiceProvider
     {
         $this->loadViewsFrom(__DIR__.'/../Resources/views', 'wordpresschat');
         $this->loadTranslationsFrom(__DIR__.'/../Resources/lang', 'wordpresschat');
+        // JSON files keyed by the English source string (__('…')).
+        $this->loadJsonTranslationsFrom(__DIR__.'/../Resources/lang');
         $this->loadMigrationsFrom(__DIR__.'/../Database/Migrations');
 
         // Ahead of Laravel's global ValidatePostSize, whose 413 for an

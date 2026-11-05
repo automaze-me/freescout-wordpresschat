@@ -135,6 +135,27 @@ class PresenceTest extends TestCase
         $this->assertStringNotContainsString('/my-account', $line);
     }
 
+    public function test_presence_line_in_german()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site);
+
+        $this->poll($site, $chat['token'], '/my-account/orders');
+        $this->backdate($chat['session'], 600);
+
+        $locale = app()->getLocale();
+        try {
+            \Helper::setLocale('de');
+            $this->assertSame('de', app()->getLocale());
+            $line = Presence::line($chat['conversation']);
+            $this->assertStringContainsString('vor 10 Minuten', $line);
+            $this->assertStringStartsWith('Hat die Seite', $line);
+        } finally {
+            // Carbon follows the app locale through its Laravel service provider.
+            app()->setLocale($locale);
+        }
+    }
+
     public function test_newest_of_several_browsers_wins()
     {
         $site = $this->makeSite();
