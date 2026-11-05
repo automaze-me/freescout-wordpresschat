@@ -175,4 +175,48 @@ class ApiFoundationTest extends TestCase
 
         $this->assertSame($before, $counts());
     }
+
+    public function test_normalized_equivalent_origin_is_accepted()
+    {
+        $id = str_repeat('a', 32);
+        $this->makeSite(['public_id' => $id]);
+
+        $response = $this->call('GET', $this->url($id), [], [], [], ['HTTP_ORIGIN' => 'HTTPS://Shop.Test:443']);
+
+        $response->assertStatus(401);
+        $response->assertHeader('Access-Control-Allow-Origin', 'https://shop.test');
+    }
+
+    public function test_foreign_origin_preflight_is_403()
+    {
+        $id = str_repeat('a', 32);
+        $this->makeSite(['public_id' => $id]);
+
+        $response = $this->call('OPTIONS', $this->url($id), [], [], [], ['HTTP_ORIGIN' => 'https://evil.test']);
+
+        $response->assertStatus(403);
+        $this->assertNull($response->headers->get('Access-Control-Allow-Origin'));
+    }
+
+    public function test_server_error_carries_cors()
+    {
+        $site = $this->makeSite();
+        list(, $token) = $this->claimSession($site);
+
+        // The session lookup of the token fails once, as a database error would.
+        $thrown = false;
+        DB::listen(function ($query) use (&$thrown) {
+            $sql = str_replace(['`', '"'], '', $query->sql);
+            if (!$thrown && stripos($sql, 'select') === 0 && strpos($sql, 'wordpresschat_sessions') !== false) {
+                $thrown = true;
+                throw new \RuntimeException('boom');
+            }
+        });
+
+        $response = $this->api('GET', $site, '/messages', $token);
+
+        $this->assertTrue($thrown, 'the listener must have hit the sessions select');
+        $response->assertStatus(500);
+        $response->assertHeader('Access-Control-Allow-Origin', 'https://shop.test');
+    }
 }

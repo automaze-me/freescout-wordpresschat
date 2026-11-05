@@ -149,6 +149,7 @@ abstract class TestCase extends CoreTestCase
      * site's Origin, JSON accepted, and the visitor's token when given.
      * $server overrides any server variable, e.g. ['REMOTE_ADDR' => …] for
      * a test that needs its own client address under the rate limits.
+     * A string $data is sent as the raw body (e.g. malformed JSON).
      */
     protected function api(string $method, Site $site, string $path, ?string $token = null, $data = null, array $headers = [], array $server = []): \Illuminate\Foundation\Testing\TestResponse
     {
@@ -168,7 +169,7 @@ abstract class TestCase extends CoreTestCase
             $method,
             '/wordpress-chat/api/v1/sites/'.$site->public_id.$path,
             [], [], [], $server,
-            $data === null ? null : json_encode($data)
+            $data === null ? null : (is_string($data) ? $data : json_encode($data))
         );
     }
 
@@ -277,9 +278,22 @@ abstract class TestCase extends CoreTestCase
     }
 
     /**
-     * Starts a chat with a tokenless first send. Returns token, session,
-     * conversation and the raw response. $server goes to api().
+     * Counts the transaction rollbacks (savepoints included) from now on.
+     * Returns a closure that gives the count so far: a race test asserts
+     * exactly 1 to prove it took the catch path.
      */
+    protected function countRollbacks(): callable
+    {
+        $count = 0;
+        \Event::listen(\Illuminate\Database\Events\TransactionRolledBack::class, function () use (&$count) {
+            $count++;
+        });
+
+        return function () use (&$count) {
+            return $count;
+        };
+    }
+
     /**
      * The SELECT statements $callback runs against $table, grammar-neutral
      * (MariaDB backticks, PostgreSQL double quotes).
@@ -299,6 +313,10 @@ abstract class TestCase extends CoreTestCase
         }));
     }
 
+    /**
+     * Starts a chat with a tokenless first send. Returns token, session,
+     * conversation and the raw response. $server goes to api().
+     */
     protected function startChat(Site $site, string $text = 'Hello', array $body = [], array $server = []): array
     {
         $new = $this->newChatToken();

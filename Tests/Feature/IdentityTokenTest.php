@@ -275,4 +275,15 @@ class IdentityTokenTest extends TestCase
         $this->assertNull($site->secretOrNull());
         $this->assertNull($site->secretOrNull());
     }
+
+    public function test_over_long_token_is_rejected_quietly()
+    {
+        $site = $this->vectorSite();
+        \Log::shouldReceive('warning')->never();
+
+        $token = 'v1.'.str_repeat('A', IdentityToken::MAX_TOKEN_LENGTH);
+
+        $this->assertNull($this->openLogin($site, $token));
+        $this->assertSame(0, TokenUse::count());
+    }
 }

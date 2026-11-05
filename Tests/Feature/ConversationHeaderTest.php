@@ -4,6 +4,7 @@ namespace Modules\WordPressChat\Tests\Feature;
 
 use App\Thread;
 use Modules\WordPressChat\Entities\Access;
+use Modules\WordPressChat\Entities\ConversationState;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Entities\Session;
 use Modules\WordPressChat\Services\ConversationHeader;
@@ -114,6 +115,57 @@ class ConversationHeaderTest extends TestCase
         $html = ConversationHeader::render($conversation);
         $this->assertStringContainsString('Email verified', $html);
         $this->assertStringNotContainsString(e(self::WARNING), $html);
+
+        // A fresh login of the account the chat is bound to: the account badge.
+        $account = $this->startChat($site);
+        $this->api('POST', $site, '/identity', $account['token'], ['login_token' => $this->loginToken($site, $account['token'], ['uid' => 42])])
+            ->assertStatus(200);
+        $this->assertSame(42, (int) ConversationState::of($account['conversation']->fresh())->wp_user_id);
+        $html = ConversationHeader::render($account['conversation']->fresh());
+        $this->assertStringContainsString('Logged-in account', $html);
+        $this->assertStringNotContainsString(e(self::WARNING), $html);
+    }
+
+    public function test_mode_hooks_echo_once_per_mode()
+    {
+        $chat = $this->startChat($this->makeSite());
+        $conversation = $chat['conversation'];
+        $mailbox = $conversation->mailbox;
+        $header = ConversationHeader::render($conversation);
+        $this->assertNotSame('', $header);
+
+        // Core's isInChatMode() also asks for the conversation view route.
+        $router = app('router');
+        $current = new \ReflectionProperty($router, 'current');
+        $current->setAccessible(true);
+        $before = $current->getValue($router);
+        $route = new \Illuminate\Routing\Route('GET', 'conversation/{id}', []);
+        $route->name('conversations.view');
+        $current->setValue($router, $route);
+
+        $run = function ($hook) use ($conversation, $mailbox, $header) {
+            ob_start();
+            try {
+                \Eventy::action($hook, $conversation, $mailbox);
+            } finally {
+                $out = ob_get_clean();
+            }
+
+            return substr_count($out, $header);
+        };
+
+        try {
+            \Helper::setChatMode(true);
+            $this->assertSame(1, $run('conversation.after_subject'), 'chat mode: after_subject');
+            $this->assertSame(0, $run('conversation.after_subject_block'), 'chat mode: after_subject_block');
+
+            \Helper::setChatMode(false);
+            $this->assertSame(0, $run('conversation.after_subject'), 'email mode: after_subject');
+            $this->assertSame(1, $run('conversation.after_subject_block'), 'email mode: after_subject_block');
+        } finally {
+            \Helper::setChatMode(false);
+            $current->setValue($router, $before);
+        }
     }
 
     public function test_site_name_is_escaped()

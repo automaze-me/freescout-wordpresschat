@@ -307,7 +307,10 @@ class VisitorIdentity
                 return false;
             }
 
-            self::forgetAccount($locked);
+            // No login to end: an anonymous visitor keeps their placeholder.
+            if ($locked->wp_user_id !== null || $locked->account_until !== null) {
+                self::forgetAccount($locked);
+            }
 
             return true;
         });

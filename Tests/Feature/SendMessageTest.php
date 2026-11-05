@@ -559,9 +559,11 @@ class SendMessageTest extends TestCase
         $site = $this->makeSite();
         $session = $this->newSession($site);
         $winner = $this->raceAgainst($site, $session, 'Hello');
+        $rollbacks = $this->countRollbacks();
 
         $message = InboundMessage::receive($site, $session, 'Hello', 'race-0001');
 
+        $this->assertSame(1, $rollbacks(), 'the duplicate must be caught after our transaction rolled back');
         $this->assertInstanceOf(Message::class, $winner());
         $this->assertSame((int) $winner()->id, (int) $message->id);
         $this->assertFalse($message->wasRecentlyCreated);
@@ -582,9 +584,11 @@ class SendMessageTest extends TestCase
             $replied++;
         }, 20, 3);
         $this->raceAgainst($site, $session, 'Hello');
+        $rollbacks = $this->countRollbacks();
 
         InboundMessage::receive($site, $session, 'Hello', 'race-0001');
 
+        $this->assertSame(1, $rollbacks(), 'the race must take the catch path');
         $this->assertSame(1, $created);
         $this->assertSame(0, $replied);
     }
@@ -647,10 +651,14 @@ class SendMessageTest extends TestCase
         $site = $this->makeSite();
         $session = $this->newSession($site);
         $this->raceAgainst($site, $session, 'Hello');
+        $rollbacks = $this->countRollbacks();
 
-        $this->expectException(MessageConflictException::class);
-
-        InboundMessage::receive($site, $session, 'Something else', 'race-0001');
+        try {
+            InboundMessage::receive($site, $session, 'Something else', 'race-0001');
+            $this->fail('A conflicting duplicate must throw.');
+        } catch (MessageConflictException $e) {
+            $this->assertSame(1, $rollbacks(), 'the conflict must come from the catch path');
+        }
     }
 
     public function test_replay_lookup_ignores_outbound_rows()
@@ -665,5 +673,27 @@ class SendMessageTest extends TestCase
         Message::where('id', $inbound->id)->update(['direction' => Message::DIRECTION_OUT]);
 
         $this->assertNull(\Modules\WordPressChat\Services\InboundMessage::existing($session, 'dir-0001'));
+    }
+
+    public function test_for_session_adopts_a_live_channel_owner()
+    {
+        $site = $this->makeSite();
+        $session = $this->newSession($site);
+        $owner = \App\Customer::createWithoutEmail(['first_name' => 'Owner']);
+        \App\CustomerChannel::create($owner->id, WordPressChat::CHANNEL, $session->public_id);
+        $before = \App\Customer::count();
+
+        $customer = \Modules\WordPressChat\Services\VisitorCustomer::forSession($session);
+
+        $this->assertSame((int) $owner->id, (int) $customer->id);
+        $this->assertSame((int) $owner->id, (int) $session->fresh()->customer_id);
+        $this->assertSame($before, \App\Customer::count());
+    }
+
+    public function test_malformed_json_body_is_422()
+    {
+        $site = $this->makeSite();
+
+        $this->api('POST', $site, '/messages', null, '{bad')->assertStatus(422);
     }
 }

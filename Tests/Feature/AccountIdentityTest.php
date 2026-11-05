@@ -11,6 +11,7 @@ use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Entities\Session;
 use Modules\WordPressChat\Entities\Site;
 use Modules\WordPressChat\Services\IdentityLineItem;
+use Modules\WordPressChat\Services\IdentityToken;
 use Modules\WordPressChat\Services\VisitorAuth;
 use Modules\WordPressChat\Services\VisitorIdentity;
 use Modules\WordPressChat\Tests\TestCase;
@@ -688,6 +689,81 @@ class AccountIdentityTest extends TestCase
 
         $this->assertNull($chat['session']->fresh()->wp_user_id);
         $this->assertSame('', Customer::find($chat['session']->customer_id)->getMainEmail());
+    }
+
+    public static function malformedLoginPayloads(): array
+    {
+        return [
+            'uid zero'      => [['uid' => 0]],
+            'uid a string'  => [['uid' => 'x']],
+            'no email'      => [['email' => null]],
+            'name an array' => [['name' => []]],
+        ];
+    }
+
+    /** @dataProvider malformedLoginPayloads */
+    public function test_malformed_login_payloads_are_rejected(array $over)
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site);
+        $before = $chat['session']->fresh()->only(['wp_user_id', 'customer_id', 'identity', 'account_until']);
+        $now = time();
+        $payload = array_merge([
+            'typ'   => 'login',
+            'sid'   => $site->public_id,
+            'bind'  => hash('sha256', $chat['token']),
+            'iat'   => $now,
+            'exp'   => $now + IdentityToken::MAX_AGE,
+            'jti'   => bin2hex(random_bytes(16)),
+            'uid'   => 42,
+            'email' => 'anna@example.test',
+            'name'  => 'Anna Example',
+        ], $over);
+        // A null override means the key is missing altogether.
+        $payload = array_filter($payload, function ($value) {
+            return $value !== null;
+        });
+        $token = IdentityToken::seal($payload, $site->getSecret(), $site->public_id);
+
+        $this->api('POST', $site, '/identity', $chat['token'], ['login_token' => $token])
+            ->assertStatus(403)->assertExactJson(['error' => 'identity_rejected']);
+
+        $this->assertSame($before, $chat['session']->fresh()->only(['wp_user_id', 'customer_id', 'identity', 'account_until']));
+        $this->assertCount(0, $this->loginLineItems($chat['conversation']));
+    }
+
+    public function test_logout_without_login_changes_nothing()
+    {
+        $site = $this->makeSite();
+        $chat = $this->startChat($site);
+        $customer = $chat['session']->fresh()->customer_id;
+
+        $this->api('POST', $site, '/logout', $chat['token'])->assertSuccessful();
+
+        $session = $chat['session']->fresh();
+        $this->assertNull($session->wp_user_id);
+        $this->assertSame((int) $customer, (int) $session->customer_id);
+        $this->assertSame((int) $chat['conversation']->customer_id, (int) $chat['conversation']->fresh()->customer_id);
+    }
+
+    public function test_reattribution_leaves_other_sessions_threads_alone()
+    {
+        $site = $this->makeSite();
+        $mine = $this->startChat($site, 'Mine');
+        $other = $this->startChat($site, 'Somebody else');
+        $otherCustomer = (int) $other['conversation']->fresh()->customer_id;
+        $otherThreads = Thread::where('conversation_id', $other['conversation']->id)->get(['id', 'customer_id', 'created_by_customer_id'])->toArray();
+
+        $this->api('POST', $site, '/identity', $mine['token'], ['login_token' => $this->loginToken($site, $mine['token'])])
+            ->assertStatus(200);
+
+        // The login did re-attribute the visitor's own chat...
+        $this->assertSame('anna@example.test', Customer::find($mine['conversation']->fresh()->customer_id)->getMainEmail());
+        // ...and nothing of the other session's.
+        $this->assertSame($otherCustomer, (int) $other['conversation']->fresh()->customer_id);
+        $this->assertSame((int) $otherCustomer, (int) $other['session']->fresh()->customer_id);
+        $this->assertSame($otherThreads, Thread::where('conversation_id', $other['conversation']->id)->get(['id', 'customer_id', 'created_by_customer_id'])->toArray());
+        $this->assertNull($this->stateOf($other['conversation'])->wp_user_id);
     }
 
     public function test_account_access_is_bound_to_the_site()

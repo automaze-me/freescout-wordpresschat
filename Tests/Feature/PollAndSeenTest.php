@@ -307,4 +307,23 @@ class PollAndSeenTest extends TestCase
         $this->assertSame(['error' => 'unauthorized'], $this->poll($site, null)->json());
         $this->poll($site, 'bogus')->assertStatus(401);
     }
+
+    public function test_poll_returns_at_most_100_rows()
+    {
+        $site = $this->makeSite();
+        list($token, $first, $conv) = $this->visitorSays($site, 'hello');
+        $ids = [];
+        for ($i = 0; $i < 105; $i++) {
+            list(, $row) = $this->agentThread($conv);
+            $ids[] = (int) $row->id;
+        }
+
+        $page = $this->poll($site, $token, $first)->assertStatus(200)->json()['messages'];
+
+        $this->assertSame(array_slice($ids, 0, 100), array_column($page, 'id'));
+
+        $rest = $this->poll($site, $token, $ids[99])->assertStatus(200)->json()['messages'];
+
+        $this->assertSame(array_slice($ids, 100), array_column($rest, 'id'));
+    }
 }

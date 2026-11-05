@@ -401,9 +401,12 @@ class AttachmentTest extends TestCase
             $competitor = InboundMessage::receive($site, $session, 'photo', 'race-file-0001', $competitorFile);
         });
 
+        $rollbacks = $this->countRollbacks();
+
         try {
             $message = InboundMessage::receive($site, $session, 'photo', 'race-file-0001', $ourFile);
 
+            $this->assertSame(1, $rollbacks(), 'the lost race must take the catch path');
             $this->assertInstanceOf(Message::class, $competitor);
             $this->assertSame((int) $competitor->id, (int) $message->id);
             $this->assertSame(1, Attachment::where('thread_id', $message->thread_id)->count());
