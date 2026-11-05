@@ -281,9 +281,18 @@ class IdentityTokenTest extends TestCase
         $site = $this->vectorSite();
         \Log::shouldReceive('warning')->never();
 
-        $token = 'v1.'.str_repeat('A', IdentityToken::MAX_TOKEN_LENGTH);
+        // Genuinely valid in every other respect, only padded past the limit,
+        // so nothing but the length guard can reject it.
+        $payload = $this->loginPayload(['pad' => str_repeat('x', IdentityToken::MAX_TOKEN_LENGTH)]);
+        $token = IdentityToken::seal($payload, self::SECRET, self::SID);
+        $this->assertGreaterThan(IdentityToken::MAX_TOKEN_LENGTH, strlen($token));
+
+        // The same token without the padding is accepted (control).
+        $control = IdentityToken::seal($this->loginPayload(['jti' => 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']), self::SECRET, self::SID);
+        $this->assertNotNull($this->openLogin($site, $control));
+        $uses = TokenUse::count();
 
         $this->assertNull($this->openLogin($site, $token));
-        $this->assertSame(0, TokenUse::count());
+        $this->assertSame($uses, TokenUse::count());
     }
 }
