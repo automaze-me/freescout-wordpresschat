@@ -320,6 +320,34 @@ class FallbackEmailTest extends TestCase
         $this->assertSame(0, DueEmails::sweep());
     }
 
+    /** A seen lands after drop() read the rows and before the claim: the claim leaves the row out. */
+    public function test_seen_between_drop_and_claim_sends_nothing()
+    {
+        list(, , $conversation) = $this->chat();
+        list(, $row) = $this->reply($conversation);
+        Queue::fake();
+
+        $this->assertSame(1, DueEmails::sweep());
+        $job = $this->pushedJob();
+        $mailer = $this->fake();
+        $raced = 0;
+
+        // drop()'s read is the job's first select on the messages table.
+        \DB::listen(function ($query) use ($row, &$raced) {
+            if ($raced || stripos($query->sql, 'select') !== 0 || strpos($query->sql, 'wordpresschat_messages') === false) {
+                return;
+            }
+            $raced++;
+            Message::where('id', $row->id)->update(['seen_at' => now()]);
+        });
+        $this->runJob($job);
+
+        $this->assertSame(1, $raced);
+        $this->assertCount(0, $mailer->calls);
+        $this->assertNull($this->emailStatus($row));
+        $this->assertNull($row->fresh()->email_thread_id);
+    }
+
     public function test_seen_after_the_claim_does_not_cancel()
     {
         list(, , $conversation) = $this->chat();

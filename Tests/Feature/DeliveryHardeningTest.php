@@ -250,6 +250,49 @@ class DeliveryHardeningTest extends TestCase
         $this->assertCount(0, $this->redItems($other));
     }
 
+    /** M5: a slow `emails` queue is no lost job. */
+    public function test_slow_emails_queue_is_not_a_lost_job()
+    {
+        list(, , $conversation) = $this->chat();
+        list($thread, $row) = $this->reply($conversation);
+        $this->queued([$row], (int) $thread->id, self::THREE_HOURS + 60);
+        config(['queue.default' => 'database']);
+        $now = time();
+        \DB::table(config('queue.connections.database.table', 'jobs'))->insert([
+            'queue' => 'emails', 'payload' => '{}', 'attempts' => 0,
+            'reserved_at' => null, 'available_at' => $now - 1200, 'created_at' => $now - 1200,
+        ]);
+
+        $this->assertSame(0, DueEmails::resolveStale());
+
+        $this->assertSame(Message::EMAIL_QUEUED, $this->emailStatus($row));
+        $this->assertCount(0, $this->redItems($conversation));
+    }
+
+    /** A retry re-queues the row between the scan and the fail: it belongs to a live job. */
+    public function test_requeued_row_between_scan_and_fail_is_kept()
+    {
+        list(, , $conversation) = $this->chat();
+        list($thread, $row) = $this->reply($conversation);
+        $this->queued([$row], (int) $thread->id, self::THREE_HOURS + 60);
+        $raced = 0;
+
+        // The batch's row read is the scan's last look at updated_at; the bump
+        // lands right after it, before the fail re-reads the rows.
+        \DB::listen(function ($query) use ($row, &$raced) {
+            if (!$raced && stripos($query->sql, 'select `id`, `conversation_id`, `updated_at` from `wordpresschat_messages`') === 0) {
+                $raced++;
+                Message::where('id', $row->id)->update(['updated_at' => now()]);
+            }
+        });
+
+        $this->assertSame(0, DueEmails::resolveStale());
+
+        $this->assertSame(1, $raced);
+        $this->assertSame(Message::EMAIL_QUEUED, $this->emailStatus($row));
+        $this->assertCount(0, $this->redItems($conversation));
+    }
+
     public function test_late_job_after_stuck_fail_sends_nothing()
     {
         list(, , $conversation) = $this->chat();

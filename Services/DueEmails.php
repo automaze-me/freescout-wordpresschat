@@ -45,6 +45,9 @@ class DueEmails
     /** Seconds a runnable job may wait before the queue counts as backed up (markLost()). */
     const BACKLOG_AGE = 600;
 
+    /** Most lost replies marked per markLost() run, oldest first. */
+    const MARK_BATCH = 200;
+
     /**
      * Where the conversation's email goes: its customer_email when that is
      * a valid address, otherwise the customer's main email when that is,
@@ -207,7 +210,7 @@ class DueEmails
         $now = $now ? $now->copy() : now();
 
         return self::resolveSending($now->copy()->subSeconds(self::STALE_SENDING))
-            + self::resolveQueued($now->copy()->subSeconds(self::STALE_QUEUED));
+            + self::resolveQueued($now);
     }
 
     private static function resolveSending(Carbon $cutoff): int
@@ -242,15 +245,28 @@ class DueEmails
         return $resolved;
     }
 
-    private static function resolveQueued(Carbon $cutoff): int
+    /**
+     * Queued batches whose job is gone. While the queue is backed up on any
+     * queue the worker consumes, `emails` included, a slow job is no lost
+     * one: nothing is failed.
+     */
+    private static function resolveQueued(Carbon $now): int
     {
+        if (self::backlog($now, true)) {
+            return 0;
+        }
+
+        $cutoff = $now->copy()->subSeconds(self::STALE_QUEUED);
         $resolved = 0;
 
         foreach (self::staleBatches(Message::EMAIL_QUEUED, $cutoff) as $key => $rows) {
             SendChatEmail::drop($key);
 
+            // Still queued and still stale: a row re-queued since the scan
+            // (a retry stamps updated_at) belongs to a live job.
             $ids = array_map('intval', Message::whereIn('id', $rows->pluck('id')->all())
                 ->where('email_status', Message::EMAIL_QUEUED)
+                ->where('updated_at', '<', $cutoff)
                 ->pluck('id')
                 ->all());
 
@@ -356,6 +372,7 @@ class DueEmails
                     ->whereRaw('wordpresschat_messages.thread_id = threads.id');
             })
             ->orderBy('threads.id')
+            ->limit(self::MARK_BATCH)
             ->get(['threads.id', 'threads.conversation_id']);
 
         $marked = 0;
@@ -393,13 +410,15 @@ class DueEmails
     }
 
     /**
-     * Whether the database queue holds a job, on any queue but `emails`,
-     * that could have run more than BACKLOG_AGE seconds ago and has not
-     * started: the worker is down or far behind. `emails` is left out: dev
-     * never consumes it, and a slow mail server must not stop this check.
-     * False for every other queue driver.
+     * Whether the database queue holds a job on a queue the worker consumes
+     * that is overdue by more than BACKLOG_AGE seconds: unreserved and
+     * available that long ago, or reserved longer ago than the queue's
+     * retry_after plus BACKLOG_AGE (a crashed worker). Jobs on queues no
+     * worker consumes (a third-party `sms`) are ignored. `emails` counts
+     * only with $withEmails: dev never consumes it, and a slow mail server
+     * must not stop the lost-reply check. False for every other queue driver.
      */
-    private static function backlog(Carbon $now): bool
+    public static function backlog(\DateTimeInterface $now, bool $withEmails = false): bool
     {
         $config = config('queue.connections.'.config('queue.default'));
 
@@ -407,11 +426,27 @@ class DueEmails
             return false;
         }
 
+        $queues = array_values(array_filter(array_map('trim', explode(',', (string) (config('app.queue_work_params')['--queue'] ?? 'emails,default')))));
+
+        if (!$withEmails) {
+            $queues = array_values(array_diff($queues, ['emails']));
+        }
+
+        if (!$queues) {
+            return false;
+        }
+
+        $at = $now->getTimestamp();
+        $reservedBefore = $at - (int) config('queue.connections.database.retry_after', 90) - self::BACKLOG_AGE;
+
         return DB::connection($config['connection'] ?? null)
             ->table($config['table'] ?? 'jobs')
-            ->whereNull('reserved_at')
-            ->where('queue', '<>', 'emails')
-            ->where('available_at', '<', $now->getTimestamp() - self::BACKLOG_AGE)
+            ->whereIn('queue', $queues)
+            ->where(function ($q) use ($at, $reservedBefore) {
+                $q->where(function ($q) use ($at) {
+                    $q->whereNull('reserved_at')->where('available_at', '<', $at - self::BACKLOG_AGE);
+                })->orWhere('reserved_at', '<', $reservedBefore);
+            })
             ->exists();
     }
 }

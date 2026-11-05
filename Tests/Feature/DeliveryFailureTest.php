@@ -116,8 +116,11 @@ class DeliveryFailureTest extends TestCase
         return Conversation::find($copy->id);
     }
 
-    /** A job row in the database queue, $age seconds past its available_at. */
-    private function queuedJob(string $queue, int $age, bool $reserved = false): void
+    /**
+     * A job row in the database queue, $age seconds past its available_at;
+     * reserved $reservedAgo seconds ago, or unreserved when null.
+     */
+    private function queuedJob(string $queue, int $age, ?int $reservedAgo = null): void
     {
         config(['queue.default' => 'database']);
         $now = time();
@@ -126,7 +129,7 @@ class DeliveryFailureTest extends TestCase
             'queue'        => $queue,
             'payload'      => '{}',
             'attempts'     => 0,
-            'reserved_at'  => $reserved ? $now : null,
+            'reserved_at'  => $reservedAgo === null ? null : $now - $reservedAgo,
             'available_at' => $now - $age,
             'created_at'   => $now - $age,
         ]);
@@ -472,18 +475,19 @@ class DeliveryFailureTest extends TestCase
     public static function backlogFree(): array
     {
         return [
-            'reserved'     => ['default', 1200, true],
-            'emails queue' => ['emails', 1200, false],
-            'fresh'        => ['default', 300, false],
+            'reserved'     => ['default', 1200, 0],
+            'emails queue' => ['emails', 1200, null],
+            'other queue'  => ['sms', 1200, null],
+            'fresh'        => ['default', 300, null],
         ];
     }
 
     /** @dataProvider backlogFree */
-    public function test_jobs_that_are_no_backlog_do_not_stop_lost_marking(string $queue, int $age, bool $reserved)
+    public function test_jobs_that_are_no_backlog_do_not_stop_lost_marking(string $queue, int $age, ?int $reservedAgo)
     {
         list($site, $token, $conversation) = $this->chat();
         $thread = $this->agentThread($conversation, 120);
-        $this->queuedJob($queue, $age, $reserved);
+        $this->queuedJob($queue, $age, $reservedAgo);
 
         $this->assertSame(1, DueEmails::markLost());
         $this->assertNotNull(Message::where('thread_id', $thread->id)->value('lost_at'));
@@ -497,5 +501,57 @@ class DeliveryFailureTest extends TestCase
         config(['queue.default' => 'sync']);
 
         $this->assertSame(1, DueEmails::markLost());
+    }
+
+    /** A crashed worker leaves its job reserved: that is a backlog too. */
+    public function test_job_reserved_long_ago_is_a_backlog()
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $thread = $this->agentThread($conversation, 120);
+        $this->queuedJob('default', 1200, 1200);
+
+        $this->assertSame(0, DueEmails::markLost());
+        $this->assertSame(0, Message::where('thread_id', $thread->id)->count());
+    }
+
+    public function test_mark_lost_works_in_batches_of_200()
+    {
+        list($site, $token, $conversation) = $this->chat();
+
+        for ($i = 0; $i < 201; $i++) {
+            $this->agentThread($conversation, 120);
+        }
+
+        $this->assertSame(200, DueEmails::markLost());
+        $this->assertSame(200, Message::where("conversation_id", $conversation->id)->whereNotNull("lost_at")->count());
+        $this->assertSame(1, DueEmails::markLost());
+        $this->assertSame(0, DueEmails::markLost());
+    }
+
+    /** A competing run inserts the row after our scan: its row stays, we write no item. */
+    public function test_mark_lost_race_keeps_the_competing_row()
+    {
+        list($site, $token, $conversation) = $this->chat();
+        $thread = $this->agentThread($conversation, 120);
+        $raced = 0;
+
+        \DB::listen(function ($query) use ($thread, &$raced) {
+            if ($raced || stripos($query->sql, 'select') !== 0 || strpos($query->sql, 'wordpresschat_messages') === false) {
+                return;
+            }
+            $raced++;
+            Message::create([
+                'conversation_id' => $thread->conversation_id,
+                'thread_id'       => $thread->id,
+                'direction'       => Message::DIRECTION_OUT,
+                'via'             => Message::VIA_CHAT,
+                'lost_at'         => now(),
+            ]);
+        });
+
+        $this->assertSame(0, DueEmails::markLost());
+        $this->assertSame(1, $raced);
+        $this->assertSame(1, Message::where('thread_id', $thread->id)->count());
+        $this->assertCount(0, $this->redItems($conversation));
     }
 }

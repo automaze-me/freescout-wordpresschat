@@ -267,9 +267,14 @@ class SendChatEmail implements ShouldQueue
      */
     private function claim(): array
     {
-        return DB::transaction(function () {
+        $ids = DB::transaction(function () {
+            // A chat row seen since drop() ran is left out (it goes back
+            // through drop() below); an email-choice row is sent regardless.
             $ids = array_map('intval', Message::where('email_thread_id', $this->threadId)
                 ->where('email_status', Message::EMAIL_QUEUED)
+                ->where(function ($q) {
+                    $q->where('via', Message::VIA_EMAIL)->orWhereNull('seen_at');
+                })
                 ->lockForUpdate()
                 ->pluck('id')
                 ->all());
@@ -284,6 +289,11 @@ class SendChatEmail implements ShouldQueue
 
             return $changed ? $ids : [];
         });
+
+        // Rows the locked read left out are still queued: release them.
+        self::drop($this->threadId);
+
+        return $ids;
     }
 
     /**
