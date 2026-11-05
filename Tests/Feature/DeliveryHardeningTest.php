@@ -280,7 +280,7 @@ class DeliveryHardeningTest extends TestCase
         // The batch's row read is the scan's last look at updated_at; the bump
         // lands right after it, before the fail re-reads the rows.
         \DB::listen(function ($query) use ($row, &$raced) {
-            if (!$raced && stripos($query->sql, 'select `id`, `conversation_id`, `updated_at` from `wordpresschat_messages`') === 0) {
+            if (!$raced && preg_match('/^select\s+["`]?id["`]?,\s*["`]?conversation_id["`]?,\s*["`]?updated_at["`]?\s+from\s+["`]?wordpresschat_messages/i', $query->sql) === 1) {
                 $raced++;
                 Message::where('id', $row->id)->update(['updated_at' => now()]);
             }
