@@ -22,6 +22,27 @@ class ApiFoundationTest extends TestCase
         return [VisitorAuth::claim($site, $token), $token];
     }
 
+    public function test_version_check_is_cached()
+    {
+        $manifest = json_decode(file_get_contents(__DIR__.'/../../module.json'), true);
+        $provider = \Modules\WordPressChat\Providers\WordPressChatServiceProvider::class;
+
+        // Seen: no read of the options table at all.
+        \Cache::forever('wordpresschat.version_seen', $manifest['version']);
+        $selects = $this->selectsOn('options', function () use ($provider, &$result) {
+            $result = $provider::restartQueueIfVersionChanged();
+        });
+        $this->assertFalse($result);
+        $this->assertSame([], $selects);
+
+        // Key missing and the Option stale: restarts, then remembers.
+        \Cache::forget('wordpresschat.version_seen');
+        \Option::set('wordpresschat.version', '0.0.0-stale');
+        $this->assertTrue($provider::restartQueueIfVersionChanged());
+        $this->assertSame($manifest['version'], \Cache::get('wordpresschat.version_seen'));
+        $this->assertFalse($provider::restartQueueIfVersionChanged());
+    }
+
     public function test_unknown_site_is_404()
     {
         $this->call('GET', $this->url(str_repeat('c', 32)))

@@ -13,6 +13,12 @@
  * before the native event, so the capture listener would be late there. The
  * hidden input is therefore also kept in sync whenever the radio changes and
  * once on load.
+ *
+ * A note is never sent to the visitor, so the picker is hidden while the
+ * form's `is_note` input has a value (core sets it in showNoteForm() and
+ * clears it in showReplyForm(), both from the .conv-add-note and .conv-reply
+ * click handlers, which run after a capture-phase listener: the picker is
+ * synced a tick later).
  */
 document.addEventListener('DOMContentLoaded', function () {
     function copyChoiceIntoForm() {
@@ -37,6 +43,20 @@ document.addEventListener('DOMContentLoaded', function () {
         hidden.value = checked.value;
     }
 
+    function syncPickerWithNote() {
+        var picker = document.querySelector('[data-wpc-picker="1"]');
+        var note = document.querySelector('.form-reply [name="is_note"]');
+        if (picker) {
+            picker.classList.toggle('hidden', !!(note && note.value));
+        }
+    }
+
+    document.addEventListener('click', function (e) {
+        if (e.target && e.target.closest && e.target.closest('.conv-add-note, .conv-reply')) {
+            setTimeout(syncPickerWithNote, 0);
+        }
+    }, true);
+
     document.addEventListener('click', function (e) {
         var target = e.target;
         while (target && target.nodeType === 1) {
@@ -55,4 +75,5 @@ document.addEventListener('DOMContentLoaded', function () {
     }, true);
 
     copyChoiceIntoForm();
+    syncPickerWithNote();
 });

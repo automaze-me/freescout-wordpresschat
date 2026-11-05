@@ -18,8 +18,8 @@ a link that reopens the chat.
   (hourly). Without cron, fallback emails are never sent.
 - A queue worker that consumes the `emails` queue. Fallback emails are sent by a queued job on
   that queue.
-- The PHP `pcntl` extension is recommended. Queue jobs have a timeout, and PHP can only enforce it
-  with `pcntl`. System → Status shows whether it is available.
+- The PHP `pcntl` extension is recommended: pcntl lets queue workers enforce job timeouts and stop
+  cleanly. System → Status shows whether it is available.
 - The PHP `intl` extension, for website addresses with international domain names (for example
   `https://www.bücher.example`). Without it, such an address is refused when you add the website.
 - MySQL/MariaDB or PostgreSQL.
@@ -60,6 +60,9 @@ installation: run the migrations and restart the queue workers. The module also 
 queue restart by itself the first time it loads after its version changed, but restarting the
 workers yourself does no harm.
 
+After restoring a database backup, run `php artisan cache:clear`: a cached "migrations done"
+result survives a restore that lost migration rows.
+
 After you update the WordPress plugin, purge your website's page cache. A cached page still holds
 the old widget configuration, so new texts and settings only appear once the page is
 regenerated.
@@ -95,8 +98,8 @@ The visitor sees an agent's reply in the chat widget, which polls for new messag
 back when a reply has been seen.
 
 A reply the visitor has not seen within the website's fallback delay goes out as one email to the
-conversation's customer. The email carries a "continue this chat" link to the website. The widget redeems it only on an
-explicit click by the visitor.
+conversation's customer. The email carries a "continue this chat" link to the website. The widget
+redeems it only on an explicit click by the visitor.
 
 No link is included, and the email still goes out, when it would also reach other people: when the
 reply has a Cc or Bcc, or when the mailbox has an automatic Bcc. The link is only
@@ -185,9 +188,10 @@ The module stores what a chat needs and little else:
 - the page path the visitor is on, so agents can see "On the site now" with the path. The query
   string and the fragment are never kept;
 - chat session tokens only as SHA-256 hashes;
-- rate-limit counters, which are keyed by HMAC-SHA256 hashes (made with the app key) of the IP address (or the token) and
-  are purged by the hourly cleanup once they have expired. IPv6 addresses are folded to their first 64 bits first.
-  The module stores no raw IP addresses. Rotating `APP_KEY` resets the counters.
+- rate-limit counters, which are keyed by HMAC-SHA256 hashes (made with the app key) of the IP
+  address (or the token) and are purged by the hourly cleanup once they have expired. IPv6 addresses
+  are folded to their first 64 bits first. The module stores no raw IP addresses. Rotating `APP_KEY`
+  resets the counters.
 
 ## Channel code
 

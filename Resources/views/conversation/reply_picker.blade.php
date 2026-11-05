@@ -8,11 +8,11 @@
 --}}
 <div class="wpc-reply-picker form-inline" data-wpc-picker="1">
     <span class="text-help">{{ __('Send via:') }}</span>
-    <label class="radio-inline">
+    <label class="radio-inline{{ $chatDisabled ? ' wpc-disabled' : '' }}">
         <input type="radio" name="wpc_channel_choice" value="chat"{{ $default === 'chat' ? ' checked' : '' }}{{ $chatDisabled ? ' disabled' : '' }}>
         {{ __('Website chat') }}
     </label>
-    <label class="radio-inline">
+    <label class="radio-inline{{ $emailDisabled ? ' wpc-disabled' : '' }}">
         <input type="radio" name="wpc_channel_choice" value="email"{{ $default === 'email' ? ' checked' : '' }}{{ $emailDisabled ? ' disabled' : '' }}>
         {{ __('Email') }}
     </label>

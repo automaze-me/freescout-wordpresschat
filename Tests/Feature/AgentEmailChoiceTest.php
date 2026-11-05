@@ -206,6 +206,12 @@ class AgentEmailChoiceTest extends TestCase
 
         $thread = $this->capture($this->agentThread($conversation), 'chat');
         $this->assertSame('email', $this->metaOf($thread));
+
+        // A form that still posts wpc_channel=chat (stale radios) is forced too.
+        $stale = $this->agentThread($conversation);
+        RouteReplyChannel::capture($stale, new Request(['wpc_channel' => 'chat']));
+        $stale->save();
+        $this->assertSame('email', $this->metaOf(Thread::find($stale->id)));
     }
 
     public function test_locked_without_an_address_cannot_force_email()

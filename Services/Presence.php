@@ -120,9 +120,7 @@ class Presence
             }
 
             if ($session->last_seen_at->diffInSeconds(now(), false) <= self::ONLINE_SECONDS) {
-                return $session->page_path !== null && $session->page_path !== ''
-                    ? __('On the site now · :path', ['path' => $session->page_path])
-                    : __('On the site now');
+                return __('On the site now · :path', ['path' => $session->page_path]);
             }
 
             return __('Left :when', ['when' => $session->last_seen_at->diffForHumans()]);

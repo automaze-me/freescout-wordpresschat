@@ -63,6 +63,20 @@ class PollAndSeenTest extends TestCase
         return $this->api('GET', $site, '/messages'.($after === null ? '' : '?after='.$after), $token);
     }
 
+    public function test_a_poll_resolves_grants_once()
+    {
+        $site = $this->makeSite();
+        list($token) = $this->visitorSays($site, 'hello');
+        $table = (new \Modules\WordPressChat\Entities\Access())->getTable();
+
+        $selects = $this->selectsOn($table, function () use ($site, $token) {
+            $this->poll($site, $token, 0)->assertStatus(200);
+        });
+
+        // The auth lookup reads sessions, not access: one grants read.
+        $this->assertCount(1, $selects, implode("\n", $selects));
+    }
+
     public function test_poll_returns_visitor_messages_and_published_replies_in_order()
     {
         $site = $this->makeSite();

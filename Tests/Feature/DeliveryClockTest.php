@@ -47,6 +47,20 @@ class DeliveryClockTest extends TestCase
     // Time is measured with a tolerance instead of Carbon::setTestNow():
     // a frozen clock breaks the module's model timestamps in this suite.
 
+    public function test_delay_for_runs_one_query()
+    {
+        $site = $this->makeSite(['fallback_delay' => 300]);
+        $conversation = $this->startChat($site)['conversation'];
+        \DB::flushQueryLog();
+        \DB::enableQueryLog();
+        $delay = \Modules\WordPressChat\Services\DeliveryClock::delayFor($conversation);
+        $count = count(\DB::getQueryLog());
+        \DB::disableQueryLog();
+
+        $this->assertSame(300, $delay);
+        $this->assertSame(1, $count);
+    }
+
     public function test_published_reply_is_due_after_the_site_delay()
     {
         $site = $this->makeSite(['fallback_delay' => 300]);

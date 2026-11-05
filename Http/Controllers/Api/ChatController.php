@@ -196,12 +196,15 @@ class ChatController extends Controller
         $page = $request->header('X-Chat-Page');
         Presence::record($session, is_string($page) ? $page : null);
 
-        $messages = Visibility::query($session, (int) $after)
+        // The grants are read once for the messages and the summary.
+        $resolved = Visibility::resolve($session);
+
+        $messages = Visibility::query($session, (int) $after, $resolved['grants'])
             ->with('thread.created_by_user', 'thread.all_attachments')
             ->limit(self::MAX_POLL)
             ->get();
 
-        $status = Visibility::status($session);
+        $status = Visibility::status($session, $resolved);
 
         return response()->json([
             'messages'     => $messages->map(function ($m) {

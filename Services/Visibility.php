@@ -117,11 +117,12 @@ class Visibility
      *
      * $after is the poll's cursor: rows above it, plus the email rows
      * published within EMAIL_POLL_WINDOW (see the class comment). Other
-     * callers pass none.
+     * callers pass none. A caller that already resolved the session's
+     * grants (resolve()['grants']) passes them to save the lookup.
      */
-    public static function query(Session $session, ?int $after = null): Builder
+    public static function query(Session $session, ?int $after = null, ?array $grants = null): Builder
     {
-        $grants = self::grants($session);
+        $grants = $grants ?? self::grants($session);
         $query = Message::query();
 
         if (!$grants) {
@@ -208,9 +209,9 @@ class Visibility
      * discovery) while it still has a grant there; otherwise the granted
      * conversation with the highest id.
      */
-    public static function latestConversation(Session $session): ?Conversation
+    public static function latestConversation(Session $session, ?array $resolved = null): ?Conversation
     {
-        $resolved = self::resolve($session);
+        $resolved = $resolved ?? self::resolve($session);
         $id = self::currentId($session, $resolved);
 
         return $id === null ? null : $resolved['conversations'][$id];
@@ -233,10 +234,13 @@ class Visibility
      * browser holds a fresh account login, which the widget ends on logout.
      * `limits` {attachment_mb} is the largest file the widget may send
      * (ChatAttachment::effectiveLimitMb(), Ruling E3).
+     *
+     * $resolved is resolve()'s result when the caller already has it (the
+     * poll); a writer that changed grants passes none and reads afresh.
      */
-    public static function status(Session $session): array
+    public static function status(Session $session, ?array $resolved = null): array
     {
-        $resolved = self::resolve($session);
+        $resolved = $resolved ?? self::resolve($session);
         $conversation = null;
         $level = null;
         $id = self::currentId($session, $resolved);
@@ -355,7 +359,7 @@ class Visibility
      * keyed by conversation id. A conversation missing from the database
      * grants nothing. A conversation without a state gets one (of()).
      */
-    private static function resolve(Session $session): array
+    public static function resolve(Session $session): array
     {
         $result = ['grants' => [], 'conversations' => [], 'states' => []];
         $rows = Access::where('session_id', $session->id)->get();

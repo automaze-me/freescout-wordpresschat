@@ -19,6 +19,21 @@ use Modules\WordPressChat\WordPressChat;
  */
 class ConversationHeader
 {
+    /**
+     * conversation_id => ['email' => thread ids that arrived by email,
+     * 'chat' => whether it is a website chat]: two reads per conversation
+     * per request, not per thread.
+     *
+     * @var array<int, array{email: int[], chat: bool}>
+     */
+    private static $chips = [];
+
+    /** Tests only. */
+    public static function clearCache(): void
+    {
+        self::$chips = [];
+    }
+
     public static function render(Conversation $conversation): string
     {
         if (!WordPressChat::isWebsiteChat($conversation)) {
@@ -48,19 +63,35 @@ class ConversationHeader
             return '';
         }
 
-        $viaEmail = Message::where('thread_id', $thread->id)
-            ->where('via', Message::VIA_EMAIL)
-            ->exists();
+        if (!isset(self::$chips[$thread->conversation_id])) {
+            self::$chips[$thread->conversation_id] = ['email' => null, 'chat' => null];
+        }
+
+        $known = &self::$chips[$thread->conversation_id];
+
+        if ($known['email'] === null) {
+            $known['email'] = Message::where('conversation_id', $thread->conversation_id)
+                ->where('via', Message::VIA_EMAIL)
+                ->whereNotNull('thread_id')
+                ->pluck('thread_id')
+                ->map(function ($id) {
+                    return (int) $id;
+                })
+                ->all();
+        }
 
         // The conversation is read only for a thread that has the chip: an
         // email thread merged into an email conversation needs none.
-        if (!$viaEmail) {
+        if (!in_array((int) $thread->id, $known['email'], true)) {
             return '';
         }
 
-        $conversation = Conversation::find($thread->conversation_id);
+        if ($known['chat'] === null) {
+            $conversation = Conversation::find($thread->conversation_id);
+            $known['chat'] = $conversation && WordPressChat::isWebsiteChat($conversation);
+        }
 
-        if (!$conversation || !WordPressChat::isWebsiteChat($conversation)) {
+        if (!$known['chat']) {
             return '';
         }
 

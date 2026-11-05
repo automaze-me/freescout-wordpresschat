@@ -179,6 +179,30 @@ class SitesAdminTest extends TestCase
         $this->assertStringContainsString('Empty means 120 seconds.', $html);
     }
 
+    public function test_validation_errors_use_the_german_field_names()
+    {
+        $admin = $this->adminUser();
+        $site  = $this->adminSite();
+        app()->setLocale('de');
+
+        try {
+            $response = $this->actingAs($admin)->from('/wordpress-chat/sites/create')
+                ->post("/wordpress-chat/sites/{$site->id}", [
+                    'name'           => 'Shop',
+                    'url'            => 'https://shop.example.com',
+                    'mailbox_id'     => $site->mailbox_id,
+                    'fallback_delay' => 5,
+                ])
+                ->assertSessionHasErrors('fallback_delay');
+            $message = session('errors')->first('fallback_delay');
+        } finally {
+            app()->setLocale('en');
+        }
+
+        $this->assertStringContainsString('Wartezeit bis zum E-Mail-Versand', $message);
+        $this->assertStringNotContainsString('fallback delay', $message);
+    }
+
     public function test_menu_is_active_on_site_pages()
     {
         $admin = $this->adminUser();

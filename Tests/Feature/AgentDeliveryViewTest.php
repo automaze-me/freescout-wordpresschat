@@ -104,6 +104,7 @@ class AgentDeliveryViewTest extends TestCase
         $html = $this->picker($conversation);
 
         $this->assertMatchesRegularExpression('/value="chat" disabled>/', $html);
+        $this->assertStringContainsString('wpc-disabled', $html);
         $this->assertMatchesRegularExpression('/value="email" checked>/', $html);
         $this->assertStringContainsString('The visitor continues by email.', $html);
     }

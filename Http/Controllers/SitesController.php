@@ -181,6 +181,12 @@ class SitesController extends Controller
             'mailbox_id'        => 'bail|required|integer|min:1|max:2147483647|exists:mailboxes,id',
             'fallback_delay'    => 'nullable|integer|min:30|max:3600',
             'max_attachment_mb' => 'nullable|integer|min:1|max:50',
+        ], [], [
+            'name'              => __('Name'),
+            'url'               => __('Website address'),
+            'mailbox_id'        => __('Mailbox'),
+            'fallback_delay'    => __('Email fallback delay (seconds)'),
+            'max_attachment_mb' => __('Max attachment size (MB)'),
         ]);
 
         $origin = Origin::normalize($request->input('url'));

@@ -129,10 +129,10 @@ class SystemChecks
     protected static function pcntl(): array
     {
         if (function_exists('pcntl_signal')) {
-            return ['label' => __('pcntl'), 'ok' => true, 'detail' => __('Available. Queue workers can shut down cleanly.')];
+            return ['label' => __('pcntl'), 'ok' => true, 'detail' => __('Available. pcntl lets queue workers enforce job timeouts and stop cleanly.')];
         }
 
-        return ['label' => __('pcntl'), 'ok' => false, 'detail' => __('The PHP pcntl extension is missing. Queue workers cannot stop gracefully, so restarts may interrupt a job.')];
+        return ['label' => __('pcntl'), 'ok' => false, 'detail' => __("The PHP pcntl extension is missing. Queue workers can't enforce job timeouts or stop cleanly, so a restart may interrupt a job.")];
     }
 
     protected static function webp(): array

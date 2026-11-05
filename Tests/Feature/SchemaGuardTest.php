@@ -215,6 +215,8 @@ class SchemaGuardTest extends TestCase
             $this->assertArrayHasKey('ok', $row);
             $this->assertIsString($row['detail']);
         }
+        $pcntl = $rows[array_search('pcntl', $labels)];
+        $this->assertStringContainsString('job timeouts', $pcntl['detail']);
         $db = $rows[array_search('Database', $labels)];
         $this->assertTrue($db['ok']);
 

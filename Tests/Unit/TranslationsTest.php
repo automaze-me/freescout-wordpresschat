@@ -31,6 +31,13 @@ class TranslationsTest extends TestCase
         return $files;
     }
 
+    public function test_scanner_skips_method_calls()
+    {
+        $keys = $this->keysIn('<?php $x?->trans("a"); $y->trans("b"); __("c");');
+
+        $this->assertSame(['c'], array_keys($keys));
+    }
+
     /** Literal of one PHP string token, unescaped. */
     private function literal(string $token): string
     {
@@ -69,62 +76,80 @@ class TranslationsTest extends TestCase
                 continue;
             }
 
-            $tokens = token_get_all($code);
-            $count = count($tokens);
-            for ($i = 0; $i < $count; $i++) {
-                if (!is_array($tokens[$i])) {
-                    continue;
-                }
-                // PHP 8 reads \__('x') as one T_NAME_FULLY_QUALIFIED token.
-                $isName = $tokens[$i][0] === T_STRING
-                    || (defined('T_NAME_FULLY_QUALIFIED') && $tokens[$i][0] === constant('T_NAME_FULLY_QUALIFIED'));
-                $name = ltrim($tokens[$i][1], '\\');
-                if (!$isName || !in_array($name, ['__', 'trans', 'trans_choice'], true)) {
-                    continue;
-                }
-                // Skip method calls such as ->trans( and ::trans(.
-                $prev = $i - 1;
-                while ($prev >= 0 && is_array($tokens[$prev]) && $tokens[$prev][0] === T_WHITESPACE) {
-                    $prev--;
-                }
-                if ($prev >= 0 && is_array($tokens[$prev]) && in_array($tokens[$prev][0], [T_OBJECT_OPERATOR, T_DOUBLE_COLON, T_FUNCTION], true)) {
-                    continue;
-                }
-                $j = $i + 1;
-                while (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) {
-                    $j++;
-                }
-                if ($tokens[$j] !== '(') {
-                    continue;
-                }
+            $keys += $this->keysIn($code, $relative);
+        }
+
+        return $keys;
+    }
+
+    /**
+     * Keys of the __(), trans() and trans_choice() calls in one piece of PHP
+     * code, keyed by key => $relative. Method and static calls and
+     * declarations are skipped (->trans(, ?->trans(, ::trans(, function trans).
+     */
+    private function keysIn(string $code, string $relative = 'code'): array
+    {
+        $keys = [];
+        $skip = [T_OBJECT_OPERATOR, T_DOUBLE_COLON, T_FUNCTION];
+        if (defined('T_NULLSAFE_OBJECT_OPERATOR')) {
+            $skip[] = constant('T_NULLSAFE_OBJECT_OPERATOR');
+        }
+
+        $tokens = token_get_all($code);
+        $count = count($tokens);
+        for ($i = 0; $i < $count; $i++) {
+            if (!is_array($tokens[$i])) {
+                continue;
+            }
+            // PHP 8 reads \__('x') as one T_NAME_FULLY_QUALIFIED token.
+            $isName = $tokens[$i][0] === T_STRING
+                || (defined('T_NAME_FULLY_QUALIFIED') && $tokens[$i][0] === constant('T_NAME_FULLY_QUALIFIED'));
+            $name = ltrim($tokens[$i][1], '\\');
+            if (!$isName || !in_array($name, ['__', 'trans', 'trans_choice'], true)) {
+                continue;
+            }
+            // Skip method calls such as ->trans( and ::trans(.
+            $prev = $i - 1;
+            while ($prev >= 0 && is_array($tokens[$prev]) && $tokens[$prev][0] === T_WHITESPACE) {
+                $prev--;
+            }
+            if ($prev >= 0 && is_array($tokens[$prev]) && in_array($tokens[$prev][0], $skip, true)) {
+                continue;
+            }
+            $j = $i + 1;
+            while (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) {
                 $j++;
-                $key = '';
-                $found = false;
-                for (; $j < $count; $j++) {
-                    $t = $tokens[$j];
-                    if (is_array($t) && $t[0] === T_WHITESPACE) {
-                        continue;
-                    }
-                    if (is_array($t) && $t[0] === T_CONSTANT_ENCAPSED_STRING) {
-                        $key .= $this->literal($t[1]);
-                        $found = true;
-                        continue;
-                    }
-                    if ($t === '.') {
-                        continue;
-                    }
-                    break;
+            }
+            if ($tokens[$j] !== '(') {
+                continue;
+            }
+            $j++;
+            $key = '';
+            $found = false;
+            for (; $j < $count; $j++) {
+                $t = $tokens[$j];
+                if (is_array($t) && $t[0] === T_WHITESPACE) {
+                    continue;
                 }
-                if ($found && $name === '__') {
-                    $keys[$key] = $relative;
-                } elseif ($found) {
-                    // trans() and trans_choice() never read JSON in Laravel 5.5.
-                    $keys[self::JSON_BLIND.' '.$name.'(\''.$key.'\') in '.$relative.':'.$tokens[$i][2]] = $relative;
-                } elseif ($name !== 'trans_choice') {
-                    // trans_choice($var, $n) and trans_choice(__('…|…'), $n) are
-                    // trusted: the first argument is translated by __() elsewhere.
-                    $keys['<non-literal in '.$relative.':'.$tokens[$i][2].'>'] = $relative;
+                if (is_array($t) && $t[0] === T_CONSTANT_ENCAPSED_STRING) {
+                    $key .= $this->literal($t[1]);
+                    $found = true;
+                    continue;
                 }
+                if ($t === '.') {
+                    continue;
+                }
+                break;
+            }
+            if ($found && $name === '__') {
+                $keys[$key] = $relative;
+            } elseif ($found) {
+                // trans() and trans_choice() never read JSON in Laravel 5.5.
+                $keys[self::JSON_BLIND.' '.$name.'(\''.$key.'\') in '.$relative.':'.$tokens[$i][2]] = $relative;
+            } elseif ($name !== 'trans_choice') {
+                // trans_choice($var, $n) and trans_choice(__('…|…'), $n) are
+                // trusted: the first argument is translated by __() elsewhere.
+                $keys['<non-literal in '.$relative.':'.$tokens[$i][2].'>'] = $relative;
             }
         }
 

@@ -280,6 +280,25 @@ abstract class TestCase extends CoreTestCase
      * Starts a chat with a tokenless first send. Returns token, session,
      * conversation and the raw response. $server goes to api().
      */
+    /**
+     * The SELECT statements $callback runs against $table, grammar-neutral
+     * (MariaDB backticks, PostgreSQL double quotes).
+     */
+    protected function selectsOn(string $table, callable $callback): array
+    {
+        \DB::flushQueryLog();
+        \DB::enableQueryLog();
+        $callback();
+        $log = \DB::getQueryLog();
+        \DB::disableQueryLog();
+
+        return array_values(array_filter(array_column($log, 'query'), function ($sql) use ($table) {
+            $sql = str_replace(['`', '"'], '', $sql);
+
+            return stripos($sql, 'select') === 0 && preg_match('/\bfrom '.preg_quote($table, '/').'\b/i', $sql);
+        }));
+    }
+
     protected function startChat(Site $site, string $text = 'Hello', array $body = [], array $server = []): array
     {
         $new = $this->newChatToken();

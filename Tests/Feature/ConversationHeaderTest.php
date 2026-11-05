@@ -23,6 +23,48 @@ class ConversationHeaderTest extends TestCase
         $chat['session']->save();
     }
 
+    public function test_thread_chips_cost_one_query()
+    {
+        $chat = $this->startChat($this->makeSite());
+        $conversation = $chat['conversation'];
+        ConversationHeader::clearCache();
+
+        $threads = [];
+        for ($i = 0; $i < 5; $i++) {
+            $thread = new Thread();
+            $thread->conversation_id = $conversation->id;
+            $thread->type = Thread::TYPE_CUSTOMER;
+            $thread->status = Thread::STATUS_ACTIVE;
+            $thread->state = Thread::STATE_PUBLISHED;
+            $thread->body = 'x';
+            $thread->source_type = Thread::SOURCE_TYPE_WEB;
+            $thread->customer_id = $conversation->customer_id;
+            $thread->created_by_customer_id = $conversation->customer_id;
+            $thread->source_via = Thread::PERSON_CUSTOMER;
+            $thread->save();
+            $threads[] = $thread;
+        }
+        Message::create([
+            'conversation_id' => $conversation->id,
+            'thread_id'       => $threads[2]->id,
+            'direction'       => Message::DIRECTION_IN,
+            'via'             => Message::VIA_EMAIL,
+        ]);
+
+        $chips = [];
+        $table = (new Message())->getTable();
+        $selects = $this->selectsOn($table, function () use ($threads, &$chips) {
+            foreach ($threads as $thread) {
+                $chips[] = ConversationHeader::threadChip($thread);
+            }
+        });
+
+        $this->assertCount(1, $selects, implode("\n", $selects));
+        $this->assertSame(['', '', 'via email', '', ''], array_map(function ($chip) {
+            return trim(strip_tags($chip));
+        }, $chips));
+    }
+
     public function test_non_chat_conversation_renders_nothing()
     {
         $conversation = $this->startChat($this->makeSite())['conversation'];

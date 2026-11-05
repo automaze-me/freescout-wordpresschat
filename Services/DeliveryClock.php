@@ -16,16 +16,17 @@ class DeliveryClock
     const DEFAULT_DELAY = 120;
 
     /**
-     * The conversation's site delay. Reads the state without creating one
-     * (ConversationState::of() would).
+     * The conversation's site delay, in one query. Reads the state without
+     * creating one (ConversationState::of() would).
      */
     public static function delayFor(Conversation $conversation): int
     {
-        $state = ConversationState::where('conversation_id', $conversation->id)->first();
-        $site = $state && (int) $state->site_id > 0 ? Site::find($state->site_id) : null;
+        $delay = (int) Site::join((new ConversationState())->getTable().' as cs', 'cs.site_id', '=', (new Site())->getTable().'.id')
+            ->where('cs.conversation_id', $conversation->id)
+            ->value('fallback_delay');
 
-        if ($site && (int) $site->fallback_delay > 0) {
-            return (int) $site->fallback_delay;
+        if ($delay > 0) {
+            return $delay;
         }
 
         return self::DEFAULT_DELAY;

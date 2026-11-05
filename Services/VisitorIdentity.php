@@ -392,11 +392,11 @@ class VisitorIdentity
      */
     private static function anonymousTarget(Session $locked): ?Conversation
     {
-        $conversation = Visibility::latestConversation($locked);
+        $resolved = Visibility::resolve($locked);
+        $conversation = Visibility::latestConversation($locked, $resolved);
 
         if ($conversation) {
-            $grants = Visibility::grants($locked);
-            $level = isset($grants[$conversation->id]) ? $grants[$conversation->id]['level'] : null;
+            $level = isset($resolved['grants'][$conversation->id]) ? $resolved['grants'][$conversation->id]['level'] : null;
         } else {
             $level = AccessLevel::forSession($locked);
         }

@@ -20,6 +20,9 @@ use Modules\WordPressChat\WordPressChat;
 
 class WordPressChatServiceProvider extends ServiceProvider
 {
+    /** Cache key holding the module version the queue was last restarted for. */
+    const VERSION_SEEN_KEY = 'wordpresschat.version_seen';
+
     public function boot()
     {
         $this->loadViewsFrom(__DIR__.'/../Resources/views', 'wordpresschat');
@@ -60,16 +63,25 @@ class WordPressChatServiceProvider extends ServiceProvider
         $manifest = json_decode(file_get_contents(__DIR__.'/../module.json'), true);
         $version = isset($manifest['version']) ? $manifest['version'] : null;
 
+        // The version this install last restarted for, remembered in the
+        // cache: boot() runs on every request, the Option read is a query.
+        if (!$version || \Cache::get(self::VERSION_SEEN_KEY) === $version) {
+            return false;
+        }
+
         // Read without Option::$cache: core's Option::set() never updates
         // that static, and get() caches misses as a sentinel, so a cached
         // read could compare against a stale value forever.
-        if (!$version || \Option::get('wordpresschat.version', false, true, false) === $version) {
+        if (\Option::get('wordpresschat.version', false, true, false) === $version) {
+            \Cache::forever(self::VERSION_SEEN_KEY, $version);
+
             return false;
         }
 
         \Artisan::call('queue:restart');
         \Option::set('wordpresschat.version', $version);
         unset(\Option::$cache['wordpresschat.version']);
+        \Cache::forever(self::VERSION_SEEN_KEY, $version);
 
         return true;
     }

@@ -7,6 +7,6 @@
 .wpc-reply-picker .wpc-picker-hint {
     margin-left: 12px;
 }
-.wpc-reply-picker label:has(input:disabled) {
+.wpc-reply-picker label.wpc-disabled {
     opacity: .6;
 }
