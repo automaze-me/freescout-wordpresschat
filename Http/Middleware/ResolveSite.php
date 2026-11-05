@@ -3,25 +3,29 @@
 namespace Modules\WordPressChat\Http\Middleware;
 
 use Closure;
+use Illuminate\Database\QueryException;
 use Modules\WordPressChat\Entities\Site;
-use Modules\WordPressChat\Services\SchemaGuard;
 
 class ResolveSite
 {
     public function handle($request, Closure $next)
     {
-        // While a module migration is pending the sites table may not exist
-        // yet (a first install whose migrations were skipped), so the
-        // lookup would be a 500. This runs before Cors, and without a site
-        // there is no origin to answer with: this 503 has no CORS headers.
-        if (!SchemaGuard::ok()) {
-            return RequireSchema::maintenance();
-        }
-
         $route = $request->route();
         $publicId = $route ? $route->parameter('site') : null;
 
-        $site = $publicId ? Site::where('public_id', $publicId)->first() : null;
+        // A lookup that fails (the sites table is missing on a first install
+        // whose migrations were skipped, or the database is down) answers
+        // 503 maintenance, not 500. Without a site there is no origin, so
+        // this 503 has no CORS headers. A pending later migration finds the
+        // site here, and RequireSchema answers its 503 with them. No
+        // transaction is open here, so catching is safe on PostgreSQL.
+        try {
+            $site = $publicId ? Site::where('public_id', $publicId)->first() : null;
+        } catch (QueryException $e) {
+            \Log::warning('WordPressChat: the website could not be looked up, so the chat answers 503 maintenance: '.$e->getMessage());
+
+            return RequireSchema::maintenance();
+        }
 
         if (!$site) {
             return response()->json(['error' => 'not_found'], 404);

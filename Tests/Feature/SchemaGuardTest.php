@@ -2,6 +2,8 @@
 
 namespace Modules\WordPressChat\Tests\Feature;
 
+use Illuminate\Database\QueryException;
+use Modules\WordPressChat\Entities\Site;
 use Modules\WordPressChat\Services\SchemaGuard;
 use Modules\WordPressChat\Services\SystemChecks;
 use Modules\WordPressChat\Tests\TestCase;
@@ -34,15 +36,60 @@ class SchemaGuardTest extends TestCase
             $response->assertStatus(503);
             $this->assertSame(['error' => 'maintenance'], json_decode($response->getContent(), true));
             $this->assertSame('300', $response->headers->get('Retry-After'));
+            $this->assertSame($site->origin, $response->headers->get('Access-Control-Allow-Origin'));
         }
 
-        // ResolveSite answers before it looks the site up (final review
-        // M3): on a first install whose migrations were skipped, the sites
-        // table doesn't exist yet. So there is no origin for CORS headers.
         foreach (\DB::getQueryLog() as $query) {
             $this->assertStringNotContainsString('wordpresschat_rate_limits', $query['query']);
-            $this->assertStringNotContainsString('wordpresschat_sites', $query['query']);
         }
+    }
+
+    /**
+     * Final review M3: a first install whose migrations were skipped has no
+     * sites table, so the site lookup itself fails. ResolveSite answers 503
+     * maintenance instead of a 500; without a site there is no origin, so
+     * no CORS headers. The failure is simulated without SQL (a failing
+     * statement would abort the PostgreSQL test transaction): a global
+     * scope throws the QueryException the missing table would raise.
+     */
+    public function test_a_failing_site_lookup_answers_503_without_cors()
+    {
+        $site = $this->makeSite();
+        $token = $this->newChatToken();
+        $scopes = new \ReflectionProperty(\Illuminate\Database\Eloquent\Model::class, 'globalScopes');
+        $scopes->setAccessible(true);
+        $saved = $scopes->getValue();
+        Site::addGlobalScope('wordpresschat-test-missing-table', function () {
+            throw new QueryException(
+                'select * from `wordpresschat_sites` where `public_id` = ? limit 1',
+                [],
+                new \PDOException("SQLSTATE[42S02]: Base table or view not found: 1146 Table 'freescout.wordpresschat_sites' doesn't exist")
+            );
+        });
+        \Log::spy();
+
+        try {
+            $calls = [
+                $this->api('GET', $site, '/messages', $token),
+                $this->api('POST', $site, '/messages', null, ['text' => 'Hi', 'new_token' => $token]),
+                $this->api('OPTIONS', $site, '/messages', null, null, ['Access-Control-Request-Method' => 'POST']),
+            ];
+        } finally {
+            $scopes->setValue($saved);
+        }
+
+        foreach ($calls as $response) {
+            $response->assertStatus(503);
+            $this->assertSame(['error' => 'maintenance'], json_decode($response->getContent(), true));
+            $this->assertSame('300', $response->headers->get('Retry-After'));
+            $this->assertNull($response->headers->get('Access-Control-Allow-Origin'));
+        }
+        \Log::shouldHaveReceived('warning')->times(3)->withArgs(function ($message) {
+            return strpos($message, 'WordPressChat: ') === 0 && strpos($message, 'wordpresschat_sites') !== false;
+        });
+
+        // The scope is gone again: the site resolves.
+        $this->api('GET', $site, '/messages', $token)->assertStatus(401);
     }
 
     public function test_pending_lists_the_missing_basename()
@@ -193,7 +240,7 @@ class SchemaGuardTest extends TestCase
             $response = $this->api('GET', $site, '/messages', $this->newChatToken());
             $response->assertStatus(503);
             $this->assertSame(['error' => 'maintenance'], json_decode($response->getContent(), true));
-            $this->assertSame('300', $response->headers->get('Retry-After'));
+            $this->assertSame($site->origin, $response->headers->get('Access-Control-Allow-Origin'));
         } finally {
             SchemaGuard::$table = 'migrations';
         }

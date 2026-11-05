@@ -6,12 +6,11 @@ use Closure;
 use Modules\WordPressChat\Services\SchemaGuard;
 
 /**
- * Answers 503 while a module migration is pending. ResolveSite already
- * answers the same before it reads the sites table; this one stays in
- * front of Throttle (which writes to the newest table, and must never run
- * while that one may be missing) should the middleware order ever change.
- * The verdict is cached once it is "ok", so the second check costs a cache
- * read.
+ * Answers 503 while a module migration is pending. Sits after Cors (so the
+ * 503 carries the CORS headers) and before Throttle (which writes to the
+ * newest table, and must never run while that one may be missing). Only a
+ * missing sites table (a first install whose migrations were skipped) is
+ * answered earlier, by ResolveSite, without CORS headers.
  */
 class RequireSchema
 {
