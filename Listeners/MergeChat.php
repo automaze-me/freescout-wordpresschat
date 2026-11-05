@@ -21,6 +21,9 @@ use Modules\WordPressChat\WordPressChat;
  * one red line item. A queued job for them then claims nothing. Rows being
  * sent ("sending") are left to the job.
  *
+ * A reply still inside core's undo window has no row yet: its publish
+ * runs after the merge, and PublishReplyToChat fails it the same way.
+ *
  * Re-pointing the rows and the browsers' access to $target is not done
  * here: it changes who can see what.
  */
@@ -59,11 +62,7 @@ class MergeChat
                 return;
             }
 
-            // Laravel 5.5's trans_choice() reads no JSON translations:
-            // __() translates the line, trans_choice() picks the form.
-            $line = __('A website chat reply had not reached the visitor when this conversation was merged. It was not sent by email.|:count website chat replies had not reached the visitor when this conversation was merged. They were not sent by email.');
-
-            FailureLineItem::create($target, trans_choice($line, $failed));
+            FailureLineItem::create($target, self::failureText($failed));
         } catch (\Throwable $e) {
             \Log::error('[WordPressChat] MergeChat: listener failed', [
                 'target_id' => is_object($target) ? ($target->id ?? null) : null,
@@ -71,5 +70,19 @@ class MergeChat
                 'error'     => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * The red line item for $count replies of a merged chat that reached
+     * the visitor neither by chat nor by email. Also written by
+     * PublishReplyToChat for a reply published after its chat was merged.
+     */
+    public static function failureText(int $count): string
+    {
+        // Laravel 5.5's trans_choice() reads no JSON translations:
+        // __() translates the line, trans_choice() picks the form.
+        $line = __('A website chat reply had not reached the visitor when this conversation was merged. It was not sent by email.|:count website chat replies had not reached the visitor when this conversation was merged. They were not sent by email.');
+
+        return trans_choice($line, $count);
     }
 }

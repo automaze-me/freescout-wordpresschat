@@ -484,6 +484,47 @@ class DeliveryHardeningTest extends TestCase
         $this->assertCount(0, $mailer->calls);
     }
 
+    /**
+     * Core publishes a chat reply 15 s after it was sent (its undo window).
+     * A merge inside that window leaves no row for MergeChat to fail: the
+     * publish, when it runs, finds the reply in an email conversation.
+     */
+    public function test_reply_published_after_its_chat_was_merged_away_gets_one_item()
+    {
+        list(, , $source) = $this->chat();
+        $reply = $this->agentThread($source, 'Sent just before the merge');
+        $target = $this->emailConversation($source);
+        $user = $this->adminUser();
+
+        $this->assertTrue($target->mergeConversations(Conversation::find($source->id), $user));
+        $this->assertSame((int) $target->id, (int) Thread::find($reply->id)->conversation_id);
+        $this->assertCount(0, $this->redItems($target));
+
+        // Core's delayed publish, with the snapshot it was queued with.
+        \Eventy::action('chat_conversation.send_reply', $source, collect([$reply]), $source->customer);
+        \Eventy::action('chat_conversation.send_reply', $source, collect([$reply]), $source->customer);
+
+        $rows = Message::where('thread_id', $reply->id)->get();
+        $this->assertCount(1, $rows);
+        $this->assertSame(Message::EMAIL_FAILED, (int) $rows[0]->email_status);
+        $this->assertSame(Message::DIRECTION_OUT, (int) $rows[0]->direction);
+        $this->assertSame((int) $source->id, (int) $rows[0]->conversation_id);
+        $this->assertNull($rows[0]->published_at);
+        $this->assertNull($rows[0]->fallback_due_at);
+
+        $items = $this->redItems($target);
+        $this->assertCount(1, $items);
+        $this->assertSame(
+            'A website chat reply had not reached the visitor when this conversation was merged. It was not sent by email.',
+            $items[0]->getActionText('', false)
+        );
+        $this->assertCount(0, $this->redItems($source));
+
+        Queue::fake();
+        $this->assertSame(0, DueEmails::sweep());
+        Queue::assertNotPushed(SendChatEmail::class);
+    }
+
     public function test_merge_of_non_chat_source_does_nothing()
     {
         list(, , $chat) = $this->chat();

@@ -4,8 +4,10 @@ namespace Modules\WordPressChat\Listeners;
 
 use App\Conversation;
 use App\Thread;
+use Illuminate\Database\QueryException;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Services\DeliveryClock;
+use Modules\WordPressChat\Services\FailureLineItem;
 use Modules\WordPressChat\WordPressChat;
 
 /**
@@ -55,11 +57,18 @@ class PublishReplyToChat
             }
 
             // The conversation may have been merged meanwhile: use the
-            // thread's current conversation, not the snapshot. A reply that
-            // now sits in an email conversation (a merge) has no chat.
+            // thread's current conversation, not the snapshot.
             $current = Conversation::find($fresh->conversation_id);
 
-            if (!$current || !WordPressChat::isWebsiteChat($current)) {
+            if (!$current) {
+                return;
+            }
+
+            if (!WordPressChat::isWebsiteChat($current)) {
+                if ((int) $current->id !== (int) $conversation->id) {
+                    self::mergedAway($conversation, $current, $fresh);
+                }
+
                 return;
             }
 
@@ -111,5 +120,48 @@ class PublishReplyToChat
                 'error'           => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * The chat was merged into a conversation without a chat (an email
+     * conversation) inside core's undo window, before this publish ran: the
+     * reply reaches the visitor neither by chat nor by email, and the merge
+     * found no row to fail (MergeChat). It gets a failed row, never
+     * published nor swept, under the snapshot's id like MergeChat's rows,
+     * and $current one red line item.
+     *
+     * thread_id is unique: an existing row means another run (or the
+     * merge) already handled the reply. A repeated run stops at the read;
+     * a concurrent one loses the insert with a unique violation, caught
+     * outside any transaction (Ruling R4). Only the run that inserted
+     * writes the item.
+     */
+    private static function mergedAway(Conversation $snapshot, Conversation $current, Thread $thread): void
+    {
+        if (Message::where('thread_id', $thread->id)->exists()) {
+            return;
+        }
+
+        try {
+            Message::create([
+                'conversation_id' => $snapshot->id,
+                'thread_id'       => $thread->id,
+                'session_id'      => null,
+                'direction'       => Message::DIRECTION_OUT,
+                'via'             => Message::VIA_CHAT,
+                'published_at'    => null,
+                'fallback_due_at' => null,
+                'email_status'    => Message::EMAIL_FAILED,
+            ]);
+        } catch (QueryException $e) {
+            // SQLSTATE class 23: a concurrent run inserted the row first.
+            if (strpos((string) $e->getCode(), '23') === 0) {
+                return;
+            }
+
+            throw $e;
+        }
+
+        FailureLineItem::create($current, MergeChat::failureText(1));
     }
 }
