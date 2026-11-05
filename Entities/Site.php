@@ -41,7 +41,7 @@ class Site extends Model
         if (!is_string($secret) || $secret === '') {
             // Once an hour per website: every poll of every visitor would
             // otherwise write the same line.
-            if (\Cache::add('wordpresschat.secret_warned.'.$this->id, 1, 3600)) {
+            if (\Cache::add('wordpresschat.secret_warned.'.$this->id, 1, 60)) {
                 \Log::warning('WordPressChat: the secret of website #'.$this->id.' cannot be read (the app key changed?). Regenerate it.');
             }
 

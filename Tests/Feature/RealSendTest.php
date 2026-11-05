@@ -472,4 +472,69 @@ class RealSendTest extends TestCase
         $this->assertNull($mailer->send($conversation, collect([Thread::find($r1->id)]), $conversation->customer));
         $this->assertFileDoesNotExist($this->dir.'/message.eml');
     }
+
+    /**
+     * Final review I1: the shop's relay refuses the visitor's address at
+     * RCPT TO. Swift records it and does not throw, so core marks the thread
+     * accepted. The rows must fail with a red item and no accepted log row.
+     */
+    public function test_recipient_refused_by_the_server_fails_visibly()
+    {
+        list($site, $conversation, $mailbox) = $this->chat();
+        list($r1, $row1) = $this->reply($conversation, 'Yes, we ship to Austria.');
+
+        // A transport that refuses every recipient without throwing.
+        $hooked = 0;
+        \Eventy::addAction('mail.reapply_mail_config', function () use (&$hooked) {
+            $hooked++;
+            $transport = new class() implements \Swift_Transport {
+                public function isStarted()
+                {
+                    return true;
+                }
+
+                public function start()
+                {
+                }
+
+                public function stop()
+                {
+                }
+
+                public function ping()
+                {
+                    return true;
+                }
+
+                public function send(\Swift_Mime_SimpleMessage $message, &$failedRecipients = null)
+                {
+                    $failedRecipients = array_merge((array) $failedRecipients, ['anna@example.test']);
+
+                    return 0;
+                }
+
+                public function registerPlugin(\Swift_Events_EventListener $plugin)
+                {
+                }
+            };
+            $mailer = \Mail::getSwiftMailer();
+            (function () use ($transport) {
+                $this->transport = $transport;
+            })->call($mailer);
+        });
+
+        Queue::fake();
+        $this->assertSame(1, DueEmails::sweep());
+        app()->call([Queue::pushed(SendChatEmail::class)->first(), 'handle']);
+
+        $this->assertSame(1, $hooked, 'the test transport was not installed');
+        $this->assertSame(Message::EMAIL_FAILED, (int) $row1->fresh()->email_status);
+        $this->assertSame(0, SendLog::where('thread_id', $r1->id)->where('status', SendLog::STATUS_ACCEPTED)->count());
+        $items = Thread::where('conversation_id', $conversation->id)
+            ->where('type', Thread::TYPE_LINEITEM)->get();
+        $texts = $items->map(function ($t) {
+            return $t->getActionText('', false);
+        })->all();
+        $this->assertContains("Email to the visitor failed: the mail server refused the visitor's address", $texts);
+    }
 }

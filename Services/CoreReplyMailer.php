@@ -27,7 +27,14 @@ class CoreReplyMailer
      */
     public function send(Conversation $conversation, Collection $replies, Customer $customer): ?string
     {
+        $root = \Mail::getFacadeRoot();
+        $before = count($root->failures());
+
         (new SendReplyToCustomer($conversation, $replies, $customer))->handle();
+
+        if (self::refused($conversation, $root, $before)) {
+            return __("the mail server refused the visitor's address");
+        }
 
         // Core reports on the newest reply (its last_thread), saved by its job.
         $newest = Thread::getLastThread($replies);
@@ -49,5 +56,26 @@ class CoreReplyMailer
 
         // An early return in core's job: mailbox deleted, reply undone, no thread.
         return __('not sent');
+    }
+
+    /**
+     * Whether the mail server refused the conversation's address at send
+     * time. Swift records a refused recipient and does not throw, so core
+     * still marks the thread accepted. Laravel's mailer keeps its failures
+     * for as long as the mail config is unchanged: only this send's count,
+     * or all of a mailer that core's job has just rebuilt.
+     */
+    private static function refused(Conversation $conversation, $before, int $count): bool
+    {
+        $after = \Mail::getFacadeRoot();
+        $failures = (array) $after->failures();
+
+        if ($after === $before) {
+            $failures = array_slice($failures, $count);
+        }
+
+        $address = strtolower(trim((string) $conversation->customer_email));
+
+        return $address !== '' && in_array($address, array_map('strtolower', array_map('strval', $failures)), true);
     }
 }

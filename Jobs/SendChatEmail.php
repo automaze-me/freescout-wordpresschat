@@ -513,7 +513,7 @@ class SendChatEmail implements ShouldQueue
             }
 
             if ($code >= '550' && $code <= '554') {
-                return __("the visitor's mail server rejected the address (SMTP :code)", ['code' => $code]);
+                return __('the mail server rejected the email (SMTP :code)', ['code' => $code]);
             }
 
             if ($code[0] === '4') {

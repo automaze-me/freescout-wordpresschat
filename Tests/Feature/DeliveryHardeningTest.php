@@ -704,6 +704,37 @@ class DeliveryHardeningTest extends TestCase
         );
     }
 
+    /**
+     * The same window with an email-choice row (the picker's Email): the
+     * claim runs the same merge check, so the reply must not go to the
+     * other visitor either.
+     */
+    public function test_email_choice_job_in_the_merge_window_never_emails_the_other_visitor()
+    {
+        $site = $this->makeSite();
+        $a = $this->startChat($site, 'Question from A');
+        $b = $this->startChat($site, 'Question from B');
+        $source = Conversation::find($a['conversation']->id);
+        $source->customer_email = 'anna@example.test';
+        $source->save();
+        $target = Conversation::find($b['conversation']->id);
+        $target->customer_email = 'bert@example.test';
+        $target->save();
+        list($thread, $job) = $this->emailChoice($source);
+        $row = Message::where('thread_id', $thread->id)->firstOrFail();
+        $this->assertSame(Message::VIA_EMAIL, (int) $row->via);
+        $mailer = $this->fake();
+
+        list($ran, $statusWhenRun) = $this->mergeWithJobInTheWindow($target, $source, $job, $row);
+
+        $this->assertSame(1, $ran);
+        $this->assertSame(Message::EMAIL_QUEUED, $statusWhenRun);
+        $this->assertSame((int) $target->id, (int) Thread::find($thread->id)->conversation_id);
+        $this->assertCount(0, $mailer->calls);
+        $this->assertSame(Message::EMAIL_FAILED, $this->emailStatus($row));
+        $this->assertCount(1, $this->redItems($target));
+    }
+
     /** Both chats are one browser's: the job in the merge window still emails that visitor. */
     public function test_fallback_job_in_the_merge_window_of_one_browsers_chats_still_sends()
     {

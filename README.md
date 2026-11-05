@@ -112,6 +112,17 @@ server refused the login (SMTP 535)", say); the log keeps the full error.
 Agents can also choose **Email** in the reply picker above the Send button to send a particular
 reply by email at once.
 
+If an email cannot be delivered because the mail server refuses the visitor's address at send time,
+the agent sees a red notice in the conversation ("Email to the visitor failed: the mail server
+refused the visitor's address") instead of a "sent" status.
+
+### Merging website chats
+
+Merging two website chats from different visitors keeps each visitor's chat private. A reply sent
+before the merge that had not reached its visitor shows a red notice in the merged conversation
+instead of going to the other visitor. Replies written in the merged conversation afterwards go to
+the target conversation's visitor.
+
 ## Upload limits
 
 Visitors can send images (JPEG, PNG, GIF, WebP) and PDF files. The limit is the website's
@@ -127,7 +138,9 @@ that the file is too large.
 
 The chat API limits how often one visitor and one IP address can call it. The counters are kept
 in the database. A request over a limit gets `429` with a `Retry-After` header, and the widget
-shows "Too many messages in a short time". Every attempt counts, including refused ones. When several limits refuse a request, `Retry-After` is the longest wait. Once an IP limit has refused a request, the per-token limits no longer count it.
+shows "Too many messages in a short time". Every attempt counts, including refused ones. When
+several limits refuse a request, `Retry-After` is the longest wait. Once an IP limit has refused a
+request, the per-token limits no longer count it.
 
 - **Starting a chat** (a message without a chat token): 10 per hour per IP address.
 - **Messages**: 20 per minute per chat token, and 60 per minute per IP address.
