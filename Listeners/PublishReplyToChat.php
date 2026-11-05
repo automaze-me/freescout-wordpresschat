@@ -5,6 +5,7 @@ namespace Modules\WordPressChat\Listeners;
 use App\Conversation;
 use App\Thread;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Services\DeliveryClock;
 use Modules\WordPressChat\Services\FailureLineItem;
@@ -150,7 +151,7 @@ class PublishReplyToChat
      * thread_id is unique: an existing row means another run (or the
      * merge) already handled the reply. A repeated run stops at the read;
      * a concurrent one loses the insert with a unique violation, caught
-     * outside any transaction (Ruling R4). Only the run that inserted
+     * outside the insert's own transaction (Ruling R4). Only the run that inserted
      * writes the item.
      */
     private static function mergedAway(Conversation $snapshot, Conversation $current, Thread $thread): void
@@ -159,17 +160,22 @@ class PublishReplyToChat
             return;
         }
 
+        // Only the insert runs in the transaction: on PostgreSQL a failed
+        // statement aborts it, so it is rolled back (a savepoint inside a
+        // caller's transaction) before the catch runs.
         try {
-            Message::create([
-                'conversation_id' => $snapshot->id,
-                'thread_id'       => $thread->id,
-                'session_id'      => null,
-                'direction'       => Message::DIRECTION_OUT,
-                'via'             => Message::VIA_CHAT,
-                'published_at'    => null,
-                'fallback_due_at' => null,
-                'email_status'    => Message::EMAIL_FAILED,
-            ]);
+            DB::transaction(function () use ($snapshot, $thread) {
+                Message::create([
+                    'conversation_id' => $snapshot->id,
+                    'thread_id'       => $thread->id,
+                    'session_id'      => null,
+                    'direction'       => Message::DIRECTION_OUT,
+                    'via'             => Message::VIA_CHAT,
+                    'published_at'    => null,
+                    'fallback_due_at' => null,
+                    'email_status'    => Message::EMAIL_FAILED,
+                ]);
+            });
         } catch (QueryException $e) {
             // SQLSTATE class 23: a concurrent run inserted the row first.
             if (strpos((string) $e->getCode(), '23') === 0) {

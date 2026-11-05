@@ -389,16 +389,21 @@ class DueEmails
         $marked = 0;
 
         foreach ($threads as $thread) {
+            // Only the insert runs in the transaction: on PostgreSQL a failed
+            // statement aborts it, so it is rolled back (a savepoint inside a
+            // caller's transaction) before the catch re-reads.
             try {
-                Message::create([
-                    'conversation_id' => $thread->conversation_id,
-                    'thread_id'       => $thread->id,
-                    'session_id'      => null,
-                    'direction'       => Message::DIRECTION_OUT,
-                    'via'             => Message::VIA_CHAT,
-                    'published_at'    => null,
-                    'lost_at'         => $now,
-                ]);
+                DB::transaction(function () use ($thread, $now) {
+                    Message::create([
+                        'conversation_id' => $thread->conversation_id,
+                        'thread_id'       => $thread->id,
+                        'session_id'      => null,
+                        'direction'       => Message::DIRECTION_OUT,
+                        'via'             => Message::VIA_CHAT,
+                        'published_at'    => null,
+                        'lost_at'         => $now,
+                    ]);
+                });
             } catch (QueryException $e) {
                 // A concurrent run inserted it first: it writes the item.
                 if (Message::where('thread_id', $thread->id)->exists()) {
