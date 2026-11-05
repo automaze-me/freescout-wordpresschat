@@ -20,6 +20,8 @@ Route::group([
     Route::post('/wordpress-chat/api/v1/sites/{site}/logout', 'IdentityController@logout')->name('wordpresschat.api.logout')->where('site', $site);
     // POST only: a link scanner's GET must never redeem a continue link.
     Route::post('/wordpress-chat/api/v1/sites/{site}/continue', 'IdentityController@continueChat')->name('wordpresschat.api.continue')->where('site', $site);
+    // Server to server (the plugin's "Test connection"): no Origin header.
+    Route::post('/wordpress-chat/api/v1/sites/{site}/ping', 'PingController@ping')->name('wordpresschat.api.ping')->where('site', $site);
     // Preflight: Cors short-circuits OPTIONS with 204 before the closure runs.
     Route::options('/wordpress-chat/api/v1/sites/{site}/{any}', function () {
         return response('', 204);

@@ -113,6 +113,27 @@ class IdentityPayload
     }
 
     /**
+     * A ping token's payload as ['origin' => string], or null. A ping is not
+     * tied to a visitor, so it is bound to 64 zeros. The origin is as the
+     * plugin sent it; the caller normalizes it.
+     */
+    public static function ping(Site $site, $token): ?array
+    {
+        $payload = self::open($site, $token, 'ping', str_repeat('0', 64));
+
+        if ($payload === null) {
+            return null;
+        }
+
+        $origin = $payload['origin'] ?? null;
+        if (!is_string($origin) || strlen($origin) > 255) {
+            return null;
+        }
+
+        return ['origin' => $origin];
+    }
+
+    /**
      * $raw in the form FreeScout stores it (lower case), or null when it is
      * not a valid address or when sanitising would rewrite it: linking an
      * address nobody gave is worse than rejecting it.

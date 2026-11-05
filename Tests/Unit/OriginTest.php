@@ -23,4 +23,24 @@ class OriginTest extends TestCase
         $this->assertNull(Origin::normalize(''));
         $this->assertNull(Origin::normalize('https://'));
     }
+
+    public function test_idn_host_is_punycoded()
+    {
+        if (!function_exists('idn_to_ascii')) {
+            $this->markTestSkipped('The intl extension is not available.');
+        }
+
+        $this->assertSame('https://xn--bcher-kva.example', Origin::normalize('https://bücher.example'));
+        $this->assertSame('https://xn--bcher-kva.example:8443', Origin::normalize('https://BÜCHER.example:8443/x'));
+        $this->assertSame('https://xn--bcher-kva.example', Origin::normalize('https://xn--bcher-kva.example'));
+    }
+
+    public function test_idn_without_intl_returns_null()
+    {
+        if (function_exists('idn_to_ascii')) {
+            $this->markTestSkipped('The intl extension is available.');
+        }
+
+        $this->assertNull(Origin::normalize('https://bücher.example'));
+    }
 }

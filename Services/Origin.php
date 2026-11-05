@@ -6,7 +6,7 @@ class Origin
 {
     /**
      * Reduce a URL to its origin (scheme://host[:port]): lowercase scheme and
-     * host, default ports dropped, path/query/fragment dropped. Returns null
+     * host (IDN hosts as punycode), default ports dropped, path/query/fragment dropped. Returns null
      * for anything that is not http(s) with a host.
      */
     public static function normalize($url)
@@ -22,7 +22,25 @@ class Origin
             return null;
         }
 
-        $origin = $scheme.'://'.strtolower($parts['host']);
+        $host = strtolower($parts['host']);
+
+        // An IDN host is compared in its punycode form, which is what a
+        // browser sends in the Origin header. Without intl it can't be
+        // converted, so it is refused rather than compared wrongly.
+        if (preg_match('/[^\x00-\x7F]/', $host)) {
+            if (!function_exists('idn_to_ascii')) {
+                return null;
+            }
+
+            $ascii = idn_to_ascii($host, IDNA_DEFAULT, INTL_IDNA_VARIANT_UTS46);
+            if (!is_string($ascii) || $ascii === '') {
+                return null;
+            }
+
+            $host = $ascii;
+        }
+
+        $origin = $scheme.'://'.$host;
 
         if (!empty($parts['port'])) {
             $port = (int) $parts['port'];
