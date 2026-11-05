@@ -28,23 +28,23 @@ class SystemChecks
         try {
             $pending = SchemaGuard::pending();
         } catch (\Throwable $e) {
-            return ['label' => 'Database', 'ok' => false, 'detail' => __('The database could not be checked: :error', ['error' => $e->getMessage()])];
+            return ['label' => __('Database'), 'ok' => false, 'detail' => __('The database could not be checked: :error', ['error' => $e->getMessage()])];
         }
 
         if ($pending) {
-            return ['label' => 'Database', 'ok' => false, 'detail' => __('Pending migrations: :names. Open System → Tools and click Migrate DB.', ['names' => implode(', ', $pending)])];
+            return ['label' => __('Database'), 'ok' => false, 'detail' => __('Pending migrations: :names. Open System → Tools and click Migrate DB.', ['names' => implode(', ', $pending)])];
         }
 
-        return ['label' => 'Database', 'ok' => true, 'detail' => __('All migrations have run.')];
+        return ['label' => __('Database'), 'ok' => true, 'detail' => __('All migrations have run.')];
     }
 
     protected static function pcntl(): array
     {
         if (function_exists('pcntl_signal')) {
-            return ['label' => 'pcntl', 'ok' => true, 'detail' => __('Available. Queue workers can shut down cleanly.')];
+            return ['label' => __('pcntl'), 'ok' => true, 'detail' => __('Available. Queue workers can shut down cleanly.')];
         }
 
-        return ['label' => 'pcntl', 'ok' => false, 'detail' => __('The PHP pcntl extension is missing. Queue workers cannot stop gracefully, so restarts may interrupt a job.')];
+        return ['label' => __('pcntl'), 'ok' => false, 'detail' => __('The PHP pcntl extension is missing. Queue workers cannot stop gracefully, so restarts may interrupt a job.')];
     }
 
     protected static function webp(): array
@@ -55,10 +55,10 @@ class SystemChecks
         }
 
         if ($mime === 'image/webp') {
-            return ['label' => 'WebP detection', 'ok' => true, 'detail' => __('WebP images are recognized, so visitors can send them.')];
+            return ['label' => __('WebP detection'), 'ok' => true, 'detail' => __('WebP images are recognized, so visitors can send them.')];
         }
 
-        return ['label' => 'WebP detection', 'ok' => false, 'detail' => __('This server does not recognize WebP images (finfo answered :mime). Visitors cannot attach them.', ['mime' => $mime ?: 'nothing'])];
+        return ['label' => __('WebP detection'), 'ok' => false, 'detail' => __('This server does not recognize WebP images (finfo answered :mime). Visitors cannot attach them.', ['mime' => $mime ?: 'nothing'])];
     }
 
     protected static function uploadLimits(): array
@@ -78,13 +78,13 @@ class SystemChecks
         $ini = ini_get('upload_max_filesize').' / '.ini_get('post_max_size');
 
         if ($effective === null) {
-            return ['label' => 'Upload limits', 'ok' => null, 'detail' => __('No website yet. PHP upload_max_filesize / post_max_size: :ini', ['ini' => $ini])];
+            return ['label' => __('Upload limits'), 'ok' => null, 'detail' => __('No website yet. PHP upload_max_filesize / post_max_size: :ini', ['ini' => $ini])];
         }
 
         if ($effective < $configured) {
-            return ['label' => 'Upload limits', 'ok' => false, 'detail' => __('Visitors can send :effective MB, but a website allows :configured MB. PHP limits it (upload_max_filesize / post_max_size: :ini).', ['effective' => $effective, 'configured' => $configured, 'ini' => $ini])];
+            return ['label' => __('Upload limits'), 'ok' => false, 'detail' => __('Visitors can send :effective MB, but a website allows :configured MB. PHP limits it (upload_max_filesize / post_max_size: :ini).', ['effective' => $effective, 'configured' => $configured, 'ini' => $ini])];
         }
 
-        return ['label' => 'Upload limits', 'ok' => true, 'detail' => __('Visitors can send :effective MB (PHP upload_max_filesize / post_max_size: :ini).', ['effective' => $effective, 'ini' => $ini])];
+        return ['label' => __('Upload limits'), 'ok' => true, 'detail' => __('Visitors can send :effective MB (PHP upload_max_filesize / post_max_size: :ini).', ['effective' => $effective, 'ini' => $ini])];
     }
 }

@@ -99,4 +99,27 @@ class SchemaGuardTest extends TestCase
         $this->assertStringContainsString('Website Chat', $html);
         $this->assertStringContainsString('WebP detection', $html);
     }
+
+    public function test_unreadable_migrations_table_is_not_ok_and_answers_503()
+    {
+        if (\DB::connection()->getDriverName() !== 'mysql') {
+            $this->markTestSkipped('A failing query would abort the PostgreSQL test transaction.');
+        }
+
+        $site = $this->makeSite();
+        \Cache::forget(SchemaGuard::cacheKey());
+        SchemaGuard::$table = 'wordpresschat_no_such_table';
+
+        try {
+            $this->assertFalse(SchemaGuard::ok());
+            $this->assertNull(\Cache::get(SchemaGuard::cacheKey()));
+
+            $response = $this->api('GET', $site, '/messages', $this->newChatToken());
+            $response->assertStatus(503);
+            $this->assertSame(['error' => 'maintenance'], json_decode($response->getContent(), true));
+            $this->assertSame($site->origin, $response->headers->get('Access-Control-Allow-Origin'));
+        } finally {
+            SchemaGuard::$table = 'migrations';
+        }
+    }
 }

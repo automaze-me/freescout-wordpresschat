@@ -13,6 +13,9 @@ namespace Modules\WordPressChat\Services;
  */
 class SchemaGuard
 {
+    /** The table Laravel records migrations in; a static so a test can point it at a missing one. */
+    public static $table = 'migrations';
+
     /** Basenames (without .php) of the module's migrations, sorted. */
     public static function expected(): array
     {
@@ -40,7 +43,7 @@ class SchemaGuard
 
         $done = [];
         foreach (array_chunk($expected, 500) as $chunk) {
-            foreach (\DB::table('migrations')->whereIn('migration', $chunk)->pluck('migration') as $name) {
+            foreach (\DB::table(self::$table)->whereIn('migration', $chunk)->pluck('migration') as $name) {
                 $done[$name] = true;
             }
         }
@@ -67,7 +70,13 @@ class SchemaGuard
             // Cache down: ask the database.
         }
 
-        if (self::pending()) {
+        // A migrations table that can't be read (missing, database down)
+        // is "not ok", never an exception: the API answers 503, not 500.
+        try {
+            if (self::pending()) {
+                return false;
+            }
+        } catch (\Throwable $e) {
             return false;
         }
 
