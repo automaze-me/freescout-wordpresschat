@@ -34,6 +34,10 @@ use Modules\WordPressChat\Level;
  * stored). A poll in that window moves the cursor past it and that browser
  * never receives it, so `after` is a best-effort cursor. InboundMessage
  * narrows the window by allocating its id as the last write before commit.
+ * An email row is published long after its id was allocated (an email
+ * choice once its email went out): a poll also returns the email rows it
+ * may see that were published in the last EMAIL_POLL_WINDOW seconds, below
+ * the cursor too; the widget skips ids it already shows.
  * Cut-offs compare ids the same way: a row allocated below the cut-off but
  * committed after it is still shown to cut-off browsers.
  */
@@ -52,6 +56,12 @@ class Visibility
      * first `closed` would lose that reply.
      */
     const CLOSED_POLL_GRACE = 120;
+
+    /**
+     * Seconds a published email row stays in every poll, whatever its
+     * cursor (see the class comment).
+     */
+    const EMAIL_POLL_WINDOW = 120;
 
     /**
      * The session's grants, keyed by conversation id (ascending). Each is
@@ -104,14 +114,28 @@ class Visibility
      * direction is paired with the only thread type it may carry, and only
      * published threads pass (agent rows also need published_at), so a
      * stray row on a note, draft or line item can never leak.
+     *
+     * $after is the poll's cursor: rows above it, plus the email rows
+     * published within EMAIL_POLL_WINDOW (see the class comment). Other
+     * callers pass none.
      */
-    public static function query(Session $session): Builder
+    public static function query(Session $session, ?int $after = null): Builder
     {
         $grants = self::grants($session);
         $query = Message::query();
 
         if (!$grants) {
             return $query->whereRaw('1 = 0')->orderBy('wordpresschat_messages.id');
+        }
+
+        if ($after !== null) {
+            $query->where(function ($q) use ($after) {
+                $q->where('wordpresschat_messages.id', '>', $after)
+                    ->orWhere(function ($q) {
+                        $q->where('wordpresschat_messages.via', Message::VIA_EMAIL)
+                            ->where('wordpresschat_messages.published_at', '>=', now()->subSeconds(self::EMAIL_POLL_WINDOW));
+                    });
+            });
         }
 
         return $query

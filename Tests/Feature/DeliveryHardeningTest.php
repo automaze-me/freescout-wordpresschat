@@ -25,7 +25,9 @@ use Modules\WordPressChat\WordPressChat;
  * Plan 5, delivery hardening: queued rows whose job is gone fail visibly,
  * core's forwarded copies (channel 106, email type) are left alone, an
  * email choice reaches verified browsers only once it was sent, and a
- * merged chat's undelivered replies get one red line item.
+ * merged chat's undelivered replies get one red line item. Plan 6: a reply
+ * published after its chat was merged into another visitor's chat never
+ * reaches that visitor.
  */
 class DeliveryHardeningTest extends TestCase
 {
@@ -566,6 +568,144 @@ class DeliveryHardeningTest extends TestCase
         Queue::fake();
         $this->assertSame(0, DueEmails::sweep());
         Queue::assertNotPushed(SendChatEmail::class);
+    }
+
+    /**
+     * Review Focus 1: a reply written to visitor A's chat, published after
+     * A's chat was merged into visitor B's chat, must never reach B. No
+     * browser holds both chats, so it fails like a reply whose chat was
+     * merged into an email conversation.
+     */
+    public function test_late_reply_after_a_chat_merge_never_reaches_the_other_visitor()
+    {
+        $site = $this->makeSite();
+        $a = $this->startChat($site, 'Question from A');
+        $b = $this->startChat($site, 'Question from B');
+        $this->assertNotEquals((int) $a['session']->id, (int) $b['session']->id);
+        $source = Conversation::find($a['conversation']->id);
+        $target = Conversation::find($b['conversation']->id);
+        $reply = $this->agentThread($source, 'Private answer for A');
+        $user = $this->adminUser();
+
+        $this->assertTrue($target->mergeConversations(Conversation::find($source->id), $user));
+        $this->assertSame((int) $target->id, (int) Thread::find($reply->id)->conversation_id);
+
+        // Core's delayed publish, with the snapshot it was queued with.
+        \Eventy::action('chat_conversation.send_reply', $source, collect([$reply]), $source->customer);
+
+        $rows = Message::where('thread_id', $reply->id)->get();
+        $this->assertCount(1, $rows);
+        $response = $this->api('GET', $site, '/messages', $b['token']);
+        $response->assertStatus(200);
+        $this->assertNotContains((int) $rows[0]->id, array_column($response->json()['messages'], 'id'));
+        $this->assertStringNotContainsString('Private answer for A', $response->getContent());
+
+        $this->assertSame(Message::EMAIL_FAILED, (int) $rows[0]->email_status);
+        $this->assertSame((int) $source->id, (int) $rows[0]->conversation_id);
+        $this->assertNull($rows[0]->published_at);
+        $this->assertNull($rows[0]->fallback_due_at);
+
+        $items = $this->redItems($target);
+        $this->assertCount(1, $items);
+        $this->assertSame(
+            'A website chat reply had not reached the visitor when this conversation was merged. It was not sent by email.',
+            $items[0]->getActionText('', false)
+        );
+    }
+
+    /**
+     * Review Focus 1, the other order: the reply was published to A's chat
+     * before the merge, and core's publish runs again afterwards (a queue
+     * retry). The row stays A's; B's browser never receives it.
+     */
+    public function test_repeated_publish_after_a_chat_merge_keeps_the_reply_private()
+    {
+        $site = $this->makeSite();
+        $a = $this->startChat($site, 'Question from A');
+        $b = $this->startChat($site, 'Question from B');
+        $source = Conversation::find($a['conversation']->id);
+        $target = Conversation::find($b['conversation']->id);
+        $reply = $this->agentThread($source, 'Private answer for A');
+        \Eventy::action('chat_conversation.send_reply', $source, collect([$reply]), $source->customer);
+        $row = Message::where('thread_id', $reply->id)->firstOrFail();
+        $this->assertContains((int) $row->id, $this->pollIds($site, $a['token']));
+        $user = $this->adminUser();
+
+        $this->assertTrue($target->mergeConversations(Conversation::find($source->id), $user));
+        \Eventy::action('chat_conversation.send_reply', $source, collect([$reply]), $source->customer);
+
+        $this->assertSame((int) $source->id, (int) $row->fresh()->conversation_id);
+        $response = $this->api('GET', $site, '/messages', $b['token']);
+        $response->assertStatus(200);
+        $this->assertNotContains((int) $row->id, array_column($response->json()['messages'], 'id'));
+        $this->assertStringNotContainsString('Private answer for A', $response->getContent());
+        // MergeChat's item for the unseen reply, and no second one.
+        $this->assertCount(1, $this->redItems($target));
+    }
+
+    /** Both chats are one browser's: the late reply follows the merge into the target. */
+    public function test_late_reply_after_a_same_browser_merge_is_published()
+    {
+        $site = $this->makeSite();
+        $first = $this->startChat($site, 'First question');
+        $source = Conversation::find($first['conversation']->id);
+        $source->status = Conversation::STATUS_CLOSED;
+        $source->save();
+        $second = $this->api('POST', $site, '/messages', $first['token'], [
+            'text'              => 'Second question',
+            'client_message_id' => bin2hex(random_bytes(8)),
+        ]);
+        $second->assertStatus(201);
+        $target = Conversation::find(Message::findOrFail($second->json()['message']['id'])->conversation_id);
+        $this->assertNotEquals((int) $source->id, (int) $target->id);
+        $this->assertSame(2, Access::where('session_id', $first['session']->id)->count());
+        $reply = $this->agentThread($source, 'Answer to the first question');
+        $user = $this->adminUser();
+
+        $this->assertTrue($target->mergeConversations(Conversation::find($source->id), $user));
+        \Eventy::action('chat_conversation.send_reply', $source, collect([$reply]), $source->customer);
+
+        $row = Message::where('thread_id', $reply->id)->firstOrFail();
+        $this->assertSame((int) $target->id, (int) $row->conversation_id);
+        $this->assertSame(Message::VIA_CHAT, (int) $row->via);
+        $this->assertNotNull($row->published_at);
+        $this->assertNull($this->emailStatus($row));
+        $this->assertContains((int) $row->id, $this->pollIds($site, $first['token']));
+        $this->assertCount(0, $this->redItems($target));
+    }
+
+    /**
+     * Two publishes of one merged-away reply at once: the other run inserts
+     * its row right after this run's existence check. This run's insert
+     * loses on the unique thread_id and writes no item.
+     */
+    public function test_merged_away_unique_violation_writes_one_row()
+    {
+        list(, , $source) = $this->chat();
+        $reply = $this->agentThread($source, 'Sent just before the merge');
+        $target = $this->emailConversation($source);
+        $user = $this->adminUser();
+        $this->assertTrue($target->mergeConversations(Conversation::find($source->id), $user));
+        $raced = 0;
+
+        \DB::listen(function ($query) use ($reply, $source, &$raced) {
+            if (!$raced && preg_match('/^select\s+exists\s*\(\s*select\s+\*\s+from\s+["`]?\w*wordpresschat_messages["`]?\s+where\s+["`]?thread_id["`]?\s*=/i', $query->sql) === 1) {
+                $raced++;
+                Message::create([
+                    'conversation_id' => $source->id,
+                    'thread_id'       => $reply->id,
+                    'direction'       => Message::DIRECTION_OUT,
+                    'via'             => Message::VIA_CHAT,
+                    'email_status'    => Message::EMAIL_FAILED,
+                ]);
+            }
+        });
+
+        \Eventy::action('chat_conversation.send_reply', $source, collect([$reply]), $source->customer);
+
+        $this->assertSame(1, $raced);
+        $this->assertSame(1, Message::where('thread_id', $reply->id)->count());
+        $this->assertCount(0, $this->redItems($target));
     }
 
     public function test_merge_of_non_chat_source_does_nothing()

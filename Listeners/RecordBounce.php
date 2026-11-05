@@ -5,6 +5,7 @@ namespace Modules\WordPressChat\Listeners;
 use App\Conversation;
 use App\SendLog;
 use App\Thread;
+use Illuminate\Support\Facades\DB;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\WordPressChat;
 
@@ -26,12 +27,22 @@ use Modules\WordPressChat\WordPressChat;
  * A bounce that another module did route into the chat conversation was
  * already noted by RecordCustomerEmail (meta on the bounce thread, which
  * saveBounceData() names in the bounced reply's send status data): no
- * second item for it.
+ * second item for it. The other order, a bounce routed in after this
+ * listener wrote the item, is checked there (BOUNCE_META on the reply).
+ *
+ * One item per reply: the meta check, the meta and the item are read and
+ * written in one transaction, under the reply's row lock. Two DSNs
+ * processed at once write one item, and an item that fails to write leaves
+ * the meta unset for the next DSN. Nothing in that transaction is expected
+ * to fail (Ruling R4).
  */
 class RecordBounce
 {
-    /** Meta on the bounced reply thread: its bounce item was written. */
-    const BOUNCE_META = 'wordpresschat.bounce_noted';
+    /**
+     * Meta on the bounced reply thread: its bounce item was written. Not
+     * RecordCustomerEmail::BOUNCE_NOTED_META, which sits on the bounce.
+     */
+    const BOUNCE_META = 'wordpresschat.bounce_item';
 
     public static function handle($log): void
     {
@@ -62,35 +73,50 @@ class RecordBounce
             }
 
             // Only a reply that was sent by email can bounce. Anything else
-            // is a forged or stray DSN.
+            // is a forged or stray DSN. A fast DSN can arrive while the job
+            // still has the row "sending": the email went out all the same.
             $sent = Message::where('email_thread_id', $thread->id)
-                ->where('email_status', Message::EMAIL_SENT)
+                ->whereIn('email_status', [Message::EMAIL_SENDING, Message::EMAIL_SENT])
                 ->exists();
 
-            if (!$sent || $thread->getMeta(self::BOUNCE_META)) {
+            if (!$sent) {
                 return;
             }
 
-            $thread->setMeta(self::BOUNCE_META, true);
-            $thread->save();
+            DB::transaction(function () use ($thread, $conversation) {
+                // Re-read under the lock: a competing DSN may have written
+                // the item since $thread was read.
+                $locked = Thread::lockForUpdate()->find($thread->id);
 
-            $recipients = SendLog::where('thread_id', $thread->id)
-                ->where('status', SendLog::STATUS_ACCEPTED)
-                ->pluck('email')
-                ->map(function ($email) {
-                    return trim((string) $email);
-                })
-                ->filter()
-                ->unique()
-                ->values()
-                ->all();
+                if (!$locked || $locked->getMeta(self::BOUNCE_META)) {
+                    return;
+                }
 
-            RecordCustomerEmail::noteBounce($conversation, $recipients);
+                $locked->setMeta(self::BOUNCE_META, true);
+                $locked->save();
+
+                RecordCustomerEmail::noteBounce($conversation, self::recipients($locked));
+            });
         } catch (\Throwable $e) {
             \Log::error('[WordPressChat] RecordBounce: listener failed', [
                 'thread_id' => is_object($log) ? ($log->thread_id ?? null) : null,
                 'error'     => $e->getMessage(),
             ]);
         }
+    }
+
+    /** Every address the transport accepted for $thread, once each. */
+    private static function recipients(Thread $thread): array
+    {
+        return SendLog::where('thread_id', $thread->id)
+            ->where('status', SendLog::STATUS_ACCEPTED)
+            ->pluck('email')
+            ->map(function ($email) {
+                return trim((string) $email);
+            })
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
     }
 }

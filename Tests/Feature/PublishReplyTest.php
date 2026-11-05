@@ -5,7 +5,9 @@ namespace Modules\WordPressChat\Tests\Feature;
 use App\Conversation;
 use App\Customer;
 use App\Thread;
+use Modules\WordPressChat\Entities\Access;
 use Modules\WordPressChat\Entities\Message;
+use Modules\WordPressChat\Services\VisitorAuth;
 use Modules\WordPressChat\Tests\TestCase;
 use Modules\WordPressChat\WordPressChat;
 
@@ -197,10 +199,17 @@ class PublishReplyTest extends TestCase
         $this->assertNull($row->fallback_due_at);
     }
 
-    public function test_row_follows_a_merged_thread()
+    /**
+     * Only between one browser's chats (Ruling P5); a merge into another
+     * visitor's chat fails the reply (DeliveryHardeningTest).
+     */
+    public function test_row_follows_a_thread_merged_between_one_browsers_chats()
     {
         $a = $this->conversation();
         $b = $this->conversation();
+        $session = VisitorAuth::claim($this->makeSite(), $this->newChatToken());
+        Access::create(['session_id' => $session->id, 'conversation_id' => $a->id]);
+        Access::create(['session_id' => $session->id, 'conversation_id' => $b->id]);
         $agent = $this->thread($a, Thread::TYPE_MESSAGE);
         $agent->conversation_id = $b->id;
         $agent->save();

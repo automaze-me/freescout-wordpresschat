@@ -75,9 +75,9 @@ class AgentEmailChoiceTest extends TestCase
         return $mailer;
     }
 
-    private function poll($site, string $token): array
+    private function poll($site, string $token, ?int $after = null): array
     {
-        $response = $this->api('GET', $site, '/messages', $token);
+        $response = $this->api('GET', $site, '/messages'.($after === null ? '' : '?after='.$after), $token);
         $response->assertStatus(200);
 
         return $response->json();
@@ -347,5 +347,45 @@ class AgentEmailChoiceTest extends TestCase
             $after = Message::where('thread_id', $thread->id)->firstOrFail()->getAttributes();
             $this->assertEquals($before, $after, 'status '.$status);
         }
+    }
+
+    /**
+     * Ids are allocated on insert, not on publish: the email choice's row
+     * is published only once its email went out, after a newer visitor
+     * message moved the browser's cursor past it. A verified poll still
+     * receives it (the email-choice poll window).
+     */
+    public function test_email_choice_sent_after_a_newer_message_still_reaches_a_verified_poll()
+    {
+        list($site, $token, $conversation, $session) = $this->chat();
+        Access::where('session_id', $session->id)->update(['verified_at' => now()]);
+        $thread = $this->capture($this->agentThread($conversation), 'email');
+        $mailer = $this->fake();
+
+        Queue::fake();
+        $this->skip($conversation, $thread);
+        $job = Queue::pushed(SendChatEmail::class)->first();
+        $row = Message::where('thread_id', $thread->id)->firstOrFail();
+
+        $this->api('POST', $site, '/messages', $token, [
+            'text'              => 'Are you still there?',
+            'client_message_id' => bin2hex(random_bytes(8)),
+        ])->assertStatus(201);
+
+        $ids = array_column($this->poll($site, $token)['messages'], 'id');
+        $this->assertNotContains((int) $row->id, $ids);
+        $cursor = max($ids);
+        $this->assertGreaterThan((int) $row->id, $cursor);
+
+        app()->call([$job, 'handle']);
+        $this->assertCount(1, $mailer->calls);
+        $this->assertNotNull($row->fresh()->published_at);
+
+        $messages = $this->poll($site, $token, $cursor)['messages'];
+        $ids = array_column($messages, 'id');
+        $this->assertContains((int) $row->id, $ids);
+        $this->assertSame('email', $messages[array_search((int) $row->id, $ids)]['via']);
+        // The window holds email rows only: the visitor's message is not sent again.
+        $this->assertNotContains($cursor, $ids);
     }
 }

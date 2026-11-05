@@ -5,6 +5,7 @@ namespace Modules\WordPressChat\Listeners;
 use App\Conversation;
 use App\Thread;
 use Illuminate\Database\QueryException;
+use Modules\WordPressChat\Entities\Access;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Services\DeliveryClock;
 use Modules\WordPressChat\Services\FailureLineItem;
@@ -22,6 +23,13 @@ use Modules\WordPressChat\WordPressChat;
  *
  * The upsert is keyed by thread_id and only ever runs for TYPE_MESSAGE
  * (agent) threads, so it can never touch a visitor's DIRECTION_IN row.
+ *
+ * Late reply after a merge (Ruling P5): a reply written to chat S whose
+ * thread now sits in conversation T (S was merged into T inside core's undo
+ * window, or before a repeated publish) goes into T only when some browser
+ * holds Access to both, i.e. both chats are one visitor's. Otherwise T's
+ * browsers belong to someone else: the reply fails like one whose chat was
+ * merged into an email conversation (mergedAway()), and is never re-pointed.
  */
 class PublishReplyToChat
 {
@@ -64,10 +72,18 @@ class PublishReplyToChat
                 return;
             }
 
+            $merged = (int) $current->id !== (int) $conversation->id;
+
             if (!WordPressChat::isWebsiteChat($current)) {
-                if ((int) $current->id !== (int) $conversation->id) {
+                if ($merged) {
                     self::mergedAway($conversation, $current, $fresh);
                 }
+
+                return;
+            }
+
+            if ($merged && !self::oneVisitor($conversation, $current)) {
+                self::mergedAway($conversation, $current, $fresh);
 
                 return;
             }
@@ -86,7 +102,8 @@ class PublishReplyToChat
 
             // Already published as chat (a queue retry or duplicate event):
             // keep the delivery state, or an emailed reply would be due
-            // again. Only the merge path's conversation id still follows.
+            // again. Only the conversation id still follows a merge between
+            // one visitor's chats (checked above).
             $alreadyPublished = $message->exists
                 && (int) $message->via === Message::VIA_CHAT
                 && $message->published_at;
@@ -123,12 +140,26 @@ class PublishReplyToChat
     }
 
     /**
+     * Whether some browser holds Access to both $source and $target.
+     */
+    private static function oneVisitor(Conversation $source, Conversation $target): bool
+    {
+        return Access::where('conversation_id', $source->id)
+            ->whereIn('session_id', function ($q) use ($target) {
+                $q->select('session_id')
+                    ->from('wordpresschat_access')
+                    ->where('conversation_id', $target->id);
+            })
+            ->exists();
+    }
+
+    /**
      * The chat was merged into a conversation without a chat (an email
-     * conversation) inside core's undo window, before this publish ran: the
-     * reply reaches the visitor neither by chat nor by email, and the merge
-     * found no row to fail (MergeChat). It gets a failed row, never
-     * published nor swept, under the snapshot's id like MergeChat's rows,
-     * and $current one red line item.
+     * conversation), or into another visitor's chat, before this publish
+     * ran: the reply reaches the visitor neither by chat nor by email, and
+     * the merge found no row to fail (MergeChat). It gets a failed row,
+     * never published nor swept, under the snapshot's id like MergeChat's
+     * rows, and $current one red line item.
      *
      * thread_id is unique: an existing row means another run (or the
      * merge) already handled the reply. A repeated run stops at the read;

@@ -34,7 +34,8 @@ use Modules\WordPressChat\WordPressChat;
  * Core itself never threads a bounce it detected into the conversation it
  * bounced from (FetchEmails skips its reply lookup for bounces), so in core
  * the bounce branch here only runs when another module routes a bounce in.
- * Core's own path is RecordBounce, on the send log saveBounceData() writes.
+ * Core's own path is RecordBounce, on the send log saveBounceData() writes;
+ * whichever of the two runs second writes no item.
  *
  * The row and the cut-off are written in one transaction, so an email row
  * never exists without its cut-off. Its unique-violation catch sits outside
@@ -60,8 +61,11 @@ class RecordCustomerEmail
 
             if ($thread->isBounce()) {
                 // Not the customer writing: no row, no cut-off, one red
-                // line item (Ruling D9), written once per bounce.
-                if (!$thread->getMeta(self::BOUNCE_NOTED_META)) {
+                // line item (Ruling D9), written once per bounce, and not
+                // at all when core's path (RecordBounce) already wrote it
+                // for the reply this bounce names.
+                if (!$thread->getMeta(self::BOUNCE_NOTED_META)
+                    && !self::notedByCore($thread)) {
                     $thread->setMeta(self::BOUNCE_NOTED_META, true);
                     $thread->save();
 
@@ -118,6 +122,18 @@ class RecordCustomerEmail
                 'error'           => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Whether RecordBounce already wrote the item for the reply $bounce
+     * names (`bounce_for_thread`, set by core's saveBounceData()).
+     */
+    private static function notedByCore(Thread $bounce): bool
+    {
+        $replyId = $bounce->getSendStatusData()['bounce_for_thread'] ?? null;
+        $reply = $replyId ? Thread::find($replyId) : null;
+
+        return $reply !== null && (bool) $reply->getMeta(RecordBounce::BOUNCE_META);
     }
 
     /**

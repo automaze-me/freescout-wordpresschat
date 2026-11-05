@@ -176,8 +176,9 @@ class ChatController extends Controller
 
     /**
      * GET …/messages?after=<id>: visible messages newer than the cursor (a
-     * best-effort cursor, see Visibility), plus the identity, conversation
-     * and limits summary from Visibility::status().
+     * best-effort cursor, see Visibility) and recently published email
+     * rows, plus the identity, conversation and limits summary from
+     * Visibility::status().
      */
     public function index(Request $request)
     {
@@ -195,8 +196,7 @@ class ChatController extends Controller
         $page = $request->header('X-Chat-Page');
         Presence::record($session, is_string($page) ? $page : null);
 
-        $messages = Visibility::query($session)
-            ->where('wordpresschat_messages.id', '>', (int) $after)
+        $messages = Visibility::query($session, (int) $after)
             ->with('thread.created_by_user', 'thread.all_attachments')
             ->limit(self::MAX_POLL)
             ->get();
