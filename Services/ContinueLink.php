@@ -10,6 +10,7 @@ use Modules\WordPressChat\Entities\Link;
 use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Entities\Session;
 use Modules\WordPressChat\Entities\Site;
+use Modules\WordPressChat\Exceptions\SessionGoneException;
 
 /**
  * "Continue this chat" links (spec §6.2). The fallback emails carry one;
@@ -55,8 +56,10 @@ class ContinueLink
 
     /**
      * The link $token names on $site while it can still be redeemed:
-     * unused, not expired, and its conversation still exists. Read only;
-     * the API checks it before it creates a session for a new browser.
+     * unused, not expired, and its conversation still exists outside the
+     * trash (an agent deleted it, or core trashed it when merging it into
+     * another). Read only; the API checks it before it creates a session
+     * for a new browser.
      */
     public static function find(Site $site, string $token): ?Link
     {
@@ -66,7 +69,10 @@ class ContinueLink
             ->where('expires_at', '>', now())
             ->first();
 
-        if (!$link || !Conversation::where('id', $link->conversation_id)->exists()) {
+        if (!$link || !Conversation::where('id', $link->conversation_id)
+            ->where('state', Conversation::STATE_PUBLISHED)
+            ->exists()
+        ) {
             return null;
         }
 
@@ -75,20 +81,23 @@ class ContinueLink
 
     /**
      * Whether $token names a link of $site that $session already redeemed
-     * (a retry after a lost answer). Read only.
+     * (a retry after a lost answer) and that has not expired since: an
+     * expired link answers 410 like any other. Read only.
      */
     public static function usedBy(Site $site, string $token, Session $session): bool
     {
         return Link::where('token_hash', hash('sha256', $token))
             ->where('site_id', $site->id)
             ->where('used_by_session_id', $session->id)
+            ->where('expires_at', '>', now())
             ->exists();
     }
 
     /**
      * Redeems $token for the browser behind $session. Returns the
-     * conversation, or null when the link is unknown, used, expired or of
-     * another site. Then nothing is written.
+     * conversation, or null when the link is unknown, used, expired, of
+     * another site or of a trashed conversation (find()). Then nothing is
+     * written.
      *
      * Everything runs in one transaction whose first statement locks the
      * session row (Ruling C10), with no SQL try/catch inside it:
@@ -106,6 +115,10 @@ class ContinueLink
      *    its email the conversation's customer_email, unless the session
      *    holds a fresh account login: it keeps the account's customer;
      * 6. the line item "Email verified via link".
+     *
+     * @throws SessionGoneException when the session row is gone (the orphan
+     *                              cleanup, or deleted with its site);
+     *                              nothing is written
      */
     public static function redeem(Site $site, Session $session, string $token): ?Conversation
     {
@@ -122,6 +135,11 @@ class ContinueLink
 
         $redeemed = DB::transaction(function () use ($session, $link, $conversation, $state) {
             $locked = Session::where('id', $session->id)->lockForUpdate()->first();
+
+            if (!$locked) {
+                throw new SessionGoneException();
+            }
+
             $now = now();
 
             $claimed = Link::where('id', $link->id)

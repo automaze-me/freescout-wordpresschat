@@ -4,9 +4,13 @@ namespace Modules\WordPressChat\Entities;
 
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 
 class Site extends Model
 {
+    /** Sessions deleted per transaction by purgeVisitorData(). */
+    const PURGE_BATCH = 500;
+
     protected $table = 'wordpresschat_sites';
 
     protected $guarded = ['id'];
@@ -43,6 +47,49 @@ class Site extends Model
     public function setSecret(string $plain): void
     {
         $this->secret = encrypt($plain);
+    }
+
+    /**
+     * Deletes what this site's visitors left in the module before the site
+     * itself is deleted: their sessions, the sessions' Access rows and the
+     * site's continue links. Message rows lose their session_id. The
+     * conversations, their states and message rows stay, so agents keep the
+     * history.
+     *
+     * Identity token uses (jti rows) carry no site, so they cannot be told
+     * apart; they hold no visitor data and IdentityToken purges them a day
+     * after they expire.
+     *
+     * Sessions go in batches, each in a transaction whose first statement
+     * locks the batch's session rows (Ruling C10): a request that is
+     * writing for one of them commits first, and one that comes later finds
+     * its row gone and answers 401 (SessionGoneException).
+     */
+    public function purgeVisitorData(): void
+    {
+        $siteId = (int) $this->id;
+
+        do {
+            $count = DB::transaction(function () use ($siteId) {
+                $ids = Session::where('site_id', $siteId)
+                    ->orderBy('id')
+                    ->limit(self::PURGE_BATCH)
+                    ->lockForUpdate()
+                    ->pluck('id')
+                    ->all();
+
+                if ($ids) {
+                    // toBase(): no updated_at, so no row looks touched.
+                    Message::whereIn('session_id', $ids)->toBase()->update(['session_id' => null]);
+                    Access::whereIn('session_id', $ids)->delete();
+                    Session::whereIn('id', $ids)->delete();
+                }
+
+                return count($ids);
+            });
+        } while ($count > 0);
+
+        Link::where('site_id', $siteId)->delete();
     }
 
     public function mailbox()

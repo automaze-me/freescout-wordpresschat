@@ -9,6 +9,7 @@ use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Entities\Session;
 use Modules\WordPressChat\Entities\Site;
 use Modules\WordPressChat\Exceptions\MessageConflictException;
+use Modules\WordPressChat\Exceptions\SessionGoneException;
 use Modules\WordPressChat\Services\ChatAttachment;
 use Modules\WordPressChat\Services\IdentityPayload;
 use Modules\WordPressChat\Services\InboundMessage;
@@ -140,7 +141,8 @@ class ChatController extends Controller
         // request uses, makes the message an account message from the
         // start; core's events then see the account customer. Opened
         // outside any transaction (Ruling R4). A rejected one is ignored:
-        // the message is stored anyway.
+        // the message is stored anyway. So is a login the service rejects
+        // because the session row is gone: receive() then answers for it.
         $login = null;
         if ($request->input('login_token') !== null) {
             $login = IdentityPayload::login($site, $request->input('login_token'), (string) $session->token_hash);
@@ -153,6 +155,9 @@ class ChatController extends Controller
             $message = InboundMessage::receive($site, $session, $text, $clientMessageId, $file);
         } catch (MessageConflictException $e) {
             return response()->json(['error' => 'conflict'], 409);
+        } catch (SessionGoneException $e) {
+            // Deleted while this request ran (orphan cleanup, site deleted).
+            return response()->json(['error' => 'unauthorized'], 401);
         }
 
         if ($login !== null) {

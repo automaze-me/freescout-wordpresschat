@@ -19,6 +19,10 @@ use Modules\WordPressChat\WordPressChat;
  * locks the session row (Ruling C10), and never catches a failed SQL
  * statement inside it. Payloads come from IdentityPayload, already opened
  * and checked outside any transaction.
+ *
+ * When that lock finds no row, the session was deleted meanwhile (the
+ * orphan cleanup, or with its site): the flow is rejected, writes nothing
+ * and returns false. The API then answers 401, as for an unknown token.
  */
 class VisitorIdentity
 {
@@ -28,14 +32,19 @@ class VisitorIdentity
     /**
      * The visitor typed an email (already sanitised by the caller). Only a
      * browser still at ANONYMOUS on its latest conversation may do this;
-     * without a visible conversation, only the session is linked.
+     * without a visible conversation, only the session is linked. False:
+     * rejected, the session row is gone.
      *
      * @throws AlreadyIdentifiedException
      */
-    public static function typedEmail(Session $session, string $email): void
+    public static function typedEmail(Session $session, string $email): bool
     {
-        DB::transaction(function () use ($session, $email) {
+        return DB::transaction(function () use ($session, $email) {
             $locked = Session::where('id', $session->id)->lockForUpdate()->first();
+
+            if (!$locked) {
+                return false;
+            }
 
             $conversation = self::anonymousTarget($locked);
             $customer = CustomerLink::resolve($locked, $email);
@@ -50,6 +59,8 @@ class VisitorIdentity
             $locked->identity = Session::IDENTITY_EMAIL;
             $locked->email = $email;
             $locked->save();
+
+            return true;
         });
     }
 
@@ -57,14 +68,19 @@ class VisitorIdentity
      * An order number, as resolved by WordPress (IdentityPayload::order()).
      * A found order links its billing customer at level ORDER; an order
      * not found only writes "not found" and leaves the identity as it is. Like a typed email, only from ANONYMOUS, and session-level only
-     * without a visible conversation.
+     * without a visible conversation. False: rejected, the session row is
+     * gone.
      *
      * @throws AlreadyIdentifiedException
      */
-    public static function order(Session $session, array $payload): void
+    public static function order(Session $session, array $payload): bool
     {
-        DB::transaction(function () use ($session, $payload) {
+        return DB::transaction(function () use ($session, $payload) {
             $locked = Session::where('id', $session->id)->lockForUpdate()->first();
+
+            if (!$locked) {
+                return false;
+            }
 
             $conversation = self::anonymousTarget($locked);
             $number = (string) $payload['num'];
@@ -75,7 +91,7 @@ class VisitorIdentity
                     IdentityLineItem::create($conversation, __('Order number :number not found', ['number' => $number]));
                 }
 
-                return;
+                return true;
             }
 
             $name = (string) ($payload['name'] ?? '');
@@ -94,6 +110,8 @@ class VisitorIdentity
             $locked->identity = Session::IDENTITY_ORDER;
             $locked->email = $email;
             $locked->save();
+
+            return true;
         });
     }
 
@@ -118,12 +136,18 @@ class VisitorIdentity
      *    open account chat (re-review N1: another device may have started
      *    it); one in no conversation yet takes the newest account chat.
      * The session's email becomes the account email whenever the session
-     * takes the account's customer.
+     * takes the account's customer. False: rejected, the session row is
+     * gone.
      */
-    public static function login(Session $session, array $payload): void
+    public static function login(Session $session, array $payload): bool
     {
-        DB::transaction(function () use ($session, $payload) {
+        return DB::transaction(function () use ($session, $payload) {
             $locked = Session::where('id', $session->id)->lockForUpdate()->first();
+
+            if (!$locked) {
+                return false;
+            }
+
             $uid = (int) $payload['uid'];
             $email = (string) $payload['email'];
 
@@ -223,6 +247,8 @@ class VisitorIdentity
             }
 
             $locked->save();
+
+            return true;
         });
     }
 
@@ -231,7 +257,8 @@ class VisitorIdentity
      * send's message started a conversation, which InboundMessage bound to
      * the account, the conversation gets the account email as its
      * customer_email and the "Logged in as account" line item. login()
-     * could not do this, as it ran before the conversation existed.
+     * could not do this, as it ran before the conversation existed. A
+     * session row gone meanwhile gets nothing.
      */
     public static function accountConversationStarted(Session $session, Message $message, array $payload): void
     {
@@ -241,6 +268,11 @@ class VisitorIdentity
 
         DB::transaction(function () use ($session, $message, $payload) {
             $locked = Session::where('id', $session->id)->lockForUpdate()->first();
+
+            if (!$locked) {
+                return;
+            }
+
             $conversation = Conversation::find($message->conversation_id);
             $state = $conversation ? ConversationState::where('conversation_id', $conversation->id)->first() : null;
 
@@ -259,23 +291,35 @@ class VisitorIdentity
 
     /**
      * The visitor logged out of WordPress (Ruling P5): see forgetAccount().
+     * False: rejected, the session row is gone.
      */
-    public static function logout(Session $session): void
+    public static function logout(Session $session): bool
     {
-        DB::transaction(function () use ($session) {
+        return DB::transaction(function () use ($session) {
             $locked = Session::where('id', $session->id)->lockForUpdate()->first();
 
+            if (!$locked) {
+                return false;
+            }
+
             self::forgetAccount($locked);
+
+            return true;
         });
     }
 
     /**
      * Whether the WordPress user $uid has chats on the site (discovery,
-     * Ruling P6).
+     * Ruling P6). Trashed ones don't count: deleted by an agent, or merged
+     * into another conversation (core trashes the merged one).
      */
     public static function hasAccountChats(int $siteId, int $uid): bool
     {
-        return ConversationState::where('site_id', $siteId)->where('wp_user_id', $uid)->exists();
+        return ConversationState::join('conversations', 'conversations.id', '=', 'wordpresschat_conversation_states.conversation_id')
+            ->where('wordpresschat_conversation_states.site_id', $siteId)
+            ->where('wordpresschat_conversation_states.wp_user_id', $uid)
+            ->where('conversations.state', Conversation::STATE_PUBLISHED)
+            ->exists();
     }
 
     /**

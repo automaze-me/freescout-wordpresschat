@@ -17,6 +17,7 @@ use Modules\WordPressChat\Entities\Message;
 use Modules\WordPressChat\Entities\Session;
 use Modules\WordPressChat\Entities\Site;
 use Modules\WordPressChat\Exceptions\MessageConflictException;
+use Modules\WordPressChat\Exceptions\SessionGoneException;
 use Modules\WordPressChat\WordPressChat;
 
 class InboundMessage
@@ -32,6 +33,10 @@ class InboundMessage
      * stores no file and fires nothing; a different text throws
      * MessageConflictException. A retry's file is ignored: the file is
      * stored in the same transaction as the thread, so it exists once.
+     *
+     * @throws MessageConflictException
+     * @throws SessionGoneException when the session row is gone; nothing is
+     *                              written
      */
     public static function receive(Site $site, Session $session, string $text, string $clientMessageId, ?UploadedFile $file = null): Message
     {
@@ -70,7 +75,13 @@ class InboundMessage
                 // First statement: serialises this session's messages, so
                 // two concurrent first sends cannot both create a customer
                 // or a conversation. The locked row is the one used below.
+                // No row: the session was deleted meanwhile (the orphan
+                // cleanup, or with its site).
                 $session = Session::where('id', $session->id)->lockForUpdate()->first();
+
+                if (!$session) {
+                    throw new SessionGoneException();
+                }
 
                 // A lapsed login lets go of the account's customer, so a new
                 // chat by whoever now sits at this browser is never filed

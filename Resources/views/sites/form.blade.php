@@ -107,7 +107,7 @@
                             {{ csrf_field() }}
                             <button type="submit" class="btn btn-default">{{ __('Regenerate secret') }}</button>
                         </form>
-                        <form method="POST" action="{{ route('wordpresschat.sites.destroy', ['id' => $site->id]) }}" class="wpc-confirm" data-confirm="{{ __('Delete this website? Its chat widget stops working.') }}" style="display:inline">
+                        <form method="POST" action="{{ route('wordpresschat.sites.destroy', ['id' => $site->id]) }}" class="wpc-confirm" data-confirm="{{ __('Delete this website? Its conversations stay in FreeScout, but the chat on the website stops working.') }}" style="display:inline">
                             {{ csrf_field() }}
                             <button type="submit" class="btn btn-danger">{{ __('Delete') }}</button>
                         </form>

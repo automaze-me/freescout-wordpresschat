@@ -85,7 +85,11 @@ class SitesController extends Controller
     {
         $this->authorizeAdmin();
 
-        $this->findSite($id)->delete();
+        // The visitor data first: should it fail, the site is still there
+        // and deleting it again finishes the job.
+        $site = $this->findSite($id);
+        $site->purgeVisitorData();
+        $site->delete();
 
         \Session::flash('flash_success_floating', __('Website deleted'));
 

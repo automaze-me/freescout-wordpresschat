@@ -7,6 +7,7 @@ use Illuminate\Routing\Controller;
 use Modules\WordPressChat\Entities\Session;
 use Modules\WordPressChat\Entities\Site;
 use Modules\WordPressChat\Exceptions\AlreadyIdentifiedException;
+use Modules\WordPressChat\Exceptions\SessionGoneException;
 use Modules\WordPressChat\Services\ContinueLink;
 use Modules\WordPressChat\Services\IdentityPayload;
 use Modules\WordPressChat\Services\Visibility;
@@ -27,8 +28,9 @@ class IdentityController extends Controller
      * together with `new_token`: account discovery on a new device
      * (Ruling P6).
      *
-     * Errors: 401 unknown or missing chat token, 403 identity_rejected for
-     * every token failure, 409 already_identified, 422 validation.
+     * Errors: 401 unknown or missing chat token (also a session deleted
+     * while the request ran), 403 identity_rejected for every token
+     * failure, 409 already_identified, 422 validation.
      */
     public function identify(Request $request)
     {
@@ -80,7 +82,9 @@ class IdentityController extends Controller
             return $this->unauthorized();
         }
 
-        VisitorIdentity::logout($session);
+        if (!VisitorIdentity::logout($session)) {
+            return $this->unauthorized();
+        }
 
         return response('', 204);
     }
@@ -93,9 +97,12 @@ class IdentityController extends Controller
      * is no GET route: a link scanner prefetching URLs can never redeem.
      *
      * 200 {token?, identity, conversation}; 410 link_invalid for every
-     * unknown, used, expired or other-site link, checked before a session
-     * is created; 401 unknown chat token; 422 validation (`link`,
-     * `new_token`); 409 conflict when `new_token` is taken on another site.
+     * unknown, used, expired or other-site link and every link of a trashed
+     * conversation, checked before a session is created; 401 unknown chat
+     * token, or a session deleted while the request ran; 422 validation
+     * (`link`, `new_token`); 409 conflict when `new_token` is taken on
+     * another site. `link` is read from the body only: a token in the query
+     * string would reach access logs, so it is ignored there.
      */
     public function continueChat(Request $request)
     {
@@ -111,7 +118,8 @@ class IdentityController extends Controller
             }
         }
 
-        $link = $request->input('link');
+        // The body only (JSON or form), never the query string.
+        $link = $request->request->get('link');
 
         if (!is_string($link) || !preg_match('/\A[A-Za-z0-9_-]{43}\z/', $link)) {
             return $this->invalid('link');
@@ -155,7 +163,13 @@ class IdentityController extends Controller
             }
         }
 
-        if (!ContinueLink::redeem($site, $session, $link)) {
+        try {
+            $redeemed = ContinueLink::redeem($site, $session, $link);
+        } catch (SessionGoneException $e) {
+            return $this->unauthorized();
+        }
+
+        if (!$redeemed) {
             return $this->linkInvalid();
         }
 
@@ -174,9 +188,13 @@ class IdentityController extends Controller
         }
 
         try {
-            VisitorIdentity::typedEmail($session, $email);
+            $applied = VisitorIdentity::typedEmail($session, $email);
         } catch (AlreadyIdentifiedException $e) {
             return $this->alreadyIdentified();
+        }
+
+        if (!$applied) {
+            return $this->unauthorized();
         }
 
         return $this->status($session);
@@ -191,9 +209,13 @@ class IdentityController extends Controller
         }
 
         try {
-            VisitorIdentity::order($session, $payload);
+            $applied = VisitorIdentity::order($session, $payload);
         } catch (AlreadyIdentifiedException $e) {
             return $this->alreadyIdentified();
+        }
+
+        if (!$applied) {
+            return $this->unauthorized();
         }
 
         return $this->status($session);
@@ -206,7 +228,9 @@ class IdentityController extends Controller
             return $this->rejected();
         }
 
-        VisitorIdentity::login($session, $payload);
+        if (!VisitorIdentity::login($session, $payload)) {
+            return $this->unauthorized();
+        }
 
         return $this->status($session);
     }
@@ -239,7 +263,9 @@ class IdentityController extends Controller
             return response()->json(['error' => 'conflict'], 409);
         }
 
-        VisitorIdentity::login($session, $payload);
+        if (!VisitorIdentity::login($session, $payload)) {
+            return $this->unauthorized();
+        }
 
         return response()->json(['token' => $newToken] + Visibility::status($session->fresh() ?: $session));
     }

@@ -93,7 +93,7 @@ class WordPressChatServiceProvider extends ServiceProvider
                 ->everyMinute()
                 ->withoutOverlapping(5);
 
-            // Expired rate-limit counters and other housekeeping.
+            // Expired rate-limit counters and orphan visitor sessions.
             $schedule->command('wordpresschat:cleanup')
                 ->hourly()
                 ->withoutOverlapping(10);
