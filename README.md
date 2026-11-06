@@ -35,24 +35,14 @@ trust, so all visitors would share one set of per-IP limits.
 
 ## Requirements
 
-- FreeScout 1.8.248 or newer.
-- PHP 7.1.2 or newer. The module derives its token keys with `hash_hkdf()`, which PHP has had
-  since 7.1.2.
-- FreeScout's cron job, running `php artisan schedule:run` every minute. The module schedules two
-  commands through it: `wordpresschat:send-due-emails` (every minute) and `wordpresschat:cleanup`
-  (hourly). Without cron, fallback emails are never sent.
-- A queue worker that consumes the `emails` queue. Fallback emails are sent by a queued job on
-  that queue.
-- The PHP `pcntl` extension is recommended: pcntl lets queue workers enforce job timeouts and stop
-  cleanly. System → Status shows whether it is available.
-- The PHP `intl` extension, for website addresses with international domain names (for example
-  `https://www.bücher.example`). Without it, such an address is refused when you add the website.
-- MySQL/MariaDB or PostgreSQL.
-- FreeScout must see each visitor's own IP address, or the per-IP [abuse limits](#abuse-limits)
-  apply to all visitors together. Behind a reverse proxy or CDN, set `APP_TRUSTED_PROXIES` in
-  FreeScout's `.env` to the proxy's addresses, and only those. Avoid container port forwarding that
-  rewrites the source address, or put a proxy in front of it that passes the client address on.
-  Check the "Client address" row in System → Status.
+A standard FreeScout installation covers almost everything. On top of that, the chat needs:
+
+- FreeScout 1.8.248 or newer, on PHP 7.1.2 or newer.
+- FreeScout reachable from the internet over HTTPS. Visitors' browsers talk to FreeScout directly,
+  and an HTTPS website cannot call a plain-HTTP address.
+- FreeScout seeing each visitor's own IP address. Behind a reverse proxy or CDN, set
+  `APP_TRUSTED_PROXIES`; otherwise all visitors share one set of [abuse limits](#abuse-limits).
+  The "Client address" row in System → Status shows what FreeScout sees.
 
 ## Installation
 
@@ -98,7 +88,8 @@ regenerated.
    - **Name** – shown in the list.
    - **URL** – the website's address, for example `https://www.example.com`. Its origin
      (scheme, host and port) is the only origin allowed to use the chat API, and the "continue
-     this chat" links in emails point to it.
+     this chat" links in emails point to it. A domain with non-Latin letters (for example
+     `https://www.bücher.example`) needs PHP's `intl` extension.
    - **Mailbox** – where the website's conversations land.
    - **Email fallback delay** – seconds before an unseen reply goes out by email (30 to 3600;
      default 120).
