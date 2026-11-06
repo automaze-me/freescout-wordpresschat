@@ -8,6 +8,31 @@ module. A visitor's chat becomes a FreeScout conversation; agents reply from Fre
 A reply the visitor does not see in the chat within a short delay is sent to them by email, with
 a link that reopens the chat.
 
+## Screenshots
+
+What a visitor sees: the Live Chat for FreeScout plugin shows the chat on a product page. The
+visitor left an email address, and the agent's replies arrive in the chat window.
+
+![The chat widget on a WordPress shop page](docs/screenshots/widget.png)
+
+The same chat in FreeScout, in chat mode. The labels show the channel and how far the visitor is
+identified ("Email not verified"), and the line below them shows the page the visitor is on. Under
+the editor you choose whether a reply goes to the chat or out by email. "Seen in chat" marks the
+replies the visitor has read.
+
+![A website chat in FreeScout](docs/screenshots/conversation.png)
+
+**Manage → Website Chat** holds one entry per website: its address, the mailbox its chats land in,
+the email fallback delay and the attachment limit. The Site ID and the secret go into the
+WordPress plugin.
+
+![The website settings in FreeScout](docs/screenshots/settings.png)
+
+**System → Status** checks the setup. Here it warns that FreeScout sits behind a proxy it does not
+trust, so all visitors would share one set of per-IP limits.
+
+![The Website Chat block in System → Status](docs/screenshots/status.png)
+
 ## Requirements
 
 - FreeScout 1.8.248 or newer.
