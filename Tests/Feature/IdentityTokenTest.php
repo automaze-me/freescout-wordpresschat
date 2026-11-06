@@ -287,7 +287,7 @@ class IdentityTokenTest extends TestCase
         $token = IdentityToken::seal($payload, self::SECRET, self::SID);
         $this->assertGreaterThan(IdentityToken::MAX_TOKEN_LENGTH, strlen($token));
 
-        // The same token without the padding is accepted (control).
+        // The same payload without the padding, under a different jti, is accepted (control).
         $control = IdentityToken::seal($this->loginPayload(['jti' => 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']), self::SECRET, self::SID);
         $this->assertNotNull($this->openLogin($site, $control));
         $uses = TokenUse::count();

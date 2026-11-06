@@ -559,11 +559,12 @@ class SendMessageTest extends TestCase
         $site = $this->makeSite();
         $session = $this->newSession($site);
         $winner = $this->raceAgainst($site, $session, 'Hello');
-        $rollbacks = $this->countRollbacks();
 
-        $message = InboundMessage::receive($site, $session, 'Hello', 'race-0001');
+        $message = $this->countRollbacks(function () use ($site, $session) {
+            return InboundMessage::receive($site, $session, 'Hello', 'race-0001');
+        }, $rollbacks);
 
-        $this->assertSame(1, $rollbacks(), 'the duplicate must be caught after our transaction rolled back');
+        $this->assertSame(1, $rollbacks, 'the duplicate must be caught after our transaction rolled back');
         $this->assertInstanceOf(Message::class, $winner());
         $this->assertSame((int) $winner()->id, (int) $message->id);
         $this->assertFalse($message->wasRecentlyCreated);
@@ -584,11 +585,12 @@ class SendMessageTest extends TestCase
             $replied++;
         }, 20, 3);
         $this->raceAgainst($site, $session, 'Hello');
-        $rollbacks = $this->countRollbacks();
 
-        InboundMessage::receive($site, $session, 'Hello', 'race-0001');
+        $this->countRollbacks(function () use ($site, $session) {
+            InboundMessage::receive($site, $session, 'Hello', 'race-0001');
+        }, $rollbacks);
 
-        $this->assertSame(1, $rollbacks(), 'the race must take the catch path');
+        $this->assertSame(1, $rollbacks, 'the race must take the catch path');
         $this->assertSame(1, $created);
         $this->assertSame(0, $replied);
     }
@@ -651,13 +653,14 @@ class SendMessageTest extends TestCase
         $site = $this->makeSite();
         $session = $this->newSession($site);
         $this->raceAgainst($site, $session, 'Hello');
-        $rollbacks = $this->countRollbacks();
 
         try {
-            InboundMessage::receive($site, $session, 'Something else', 'race-0001');
+            $this->countRollbacks(function () use ($site, $session) {
+                InboundMessage::receive($site, $session, 'Something else', 'race-0001');
+            }, $rollbacks);
             $this->fail('A conflicting duplicate must throw.');
         } catch (MessageConflictException $e) {
-            $this->assertSame(1, $rollbacks(), 'the conflict must come from the catch path');
+            $this->assertSame(1, $rollbacks, 'the conflict must come from the catch path');
         }
     }
 

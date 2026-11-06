@@ -864,13 +864,9 @@ class FallbackEmailTest extends TestCase
         }
     }
 
-    /** An anonymous chat is excluded by the sweep's own query, with no customer or email lookup. */
-    public function test_anonymous_conversation_is_not_reloaded_each_minute()
+    /** The customer and email lookups the sweep runs. */
+    private function sweepLookups(): array
     {
-        list(, , $conversation) = $this->chat('');
-        $this->reply($conversation);
-        Queue::fake();
-
         $lookups = [];
         \DB::listen(function ($query) use (&$lookups) {
             if (preg_match('/^select [^()]*? from [`"]?(customers|emails)[`"]?[\s]/i', $query->sql)) {
@@ -878,10 +874,31 @@ class FallbackEmailTest extends TestCase
             }
         });
 
-        $this->assertSame(0, DueEmails::sweep());
+        DueEmails::sweep();
 
-        $this->assertSame([], $lookups);
+        return $lookups;
+    }
+
+    /** An anonymous chat is excluded by the sweep's own query, with no customer or email lookup. */
+    public function test_anonymous_conversation_is_not_reloaded_each_minute()
+    {
+        list(, , $conversation) = $this->chat('');
+        $this->reply($conversation);
+        Queue::fake();
+
+        $this->assertSame([], $this->sweepLookups());
         Queue::assertNotPushed(SendChatEmail::class);
+    }
+
+    /** Positive control: the lookup pattern does see the lookups of a chat that is not filtered out. */
+    public function test_sweep_lookup_pattern_sees_a_reloaded_conversation()
+    {
+        list(, , $conversation) = $this->chat('');
+        $this->reply($conversation);
+        \App\Email::create('anna@example.test', $conversation->customer_id);
+        Queue::fake();
+
+        $this->assertNotSame([], $this->sweepLookups());
     }
 
     /** A customer with an email row but an empty conversation address still gets the email. */

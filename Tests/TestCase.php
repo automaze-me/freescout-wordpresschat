@@ -277,21 +277,39 @@ abstract class TestCase extends CoreTestCase
         ], $over), $site->getSecret(), $site->public_id);
     }
 
-    /**
-     * Counts the transaction rollbacks (savepoints included) from now on.
-     * Returns a closure that gives the count so far: a race test asserts
-     * exactly 1 to prove it took the catch path.
-     */
-    protected function countRollbacks(): callable
-    {
-        $count = 0;
-        \Event::listen(\Illuminate\Database\Events\TransactionRolledBack::class, function () use (&$count) {
-            $count++;
-        });
+    /** Whether countRollbacks()'s listener is registered on this test's dispatcher. */
+    private $rollbackListening = false;
 
-        return function () use (&$count) {
-            return $count;
-        };
+    /** Set by countRollbacks() while its closure runs. */
+    private $rollbackCounting = false;
+
+    private $rollbackCount = 0;
+
+    /**
+     * Runs $measured and puts the number of transaction rollbacks (savepoints
+     * included) on the default connection that happened inside it into
+     * $count, also when $measured throws. Returns what $measured returns: a
+     * race test asserts exactly 1 to prove it took the catch path.
+     */
+    protected function countRollbacks(callable $measured, &$count)
+    {
+        if (!$this->rollbackListening) {
+            $this->rollbackListening = true;
+            \Event::listen(\Illuminate\Database\Events\TransactionRolledBack::class, function ($event) {
+                if ($this->rollbackCounting && $event->connectionName === config('database.default')) {
+                    $this->rollbackCount++;
+                }
+            });
+        }
+
+        $this->rollbackCount = 0;
+        $this->rollbackCounting = true;
+        try {
+            return $measured();
+        } finally {
+            $this->rollbackCounting = false;
+            $count = $this->rollbackCount;
+        }
     }
 
     /**

@@ -523,7 +523,7 @@ class DeliveryFailureTest extends TestCase
         }
 
         $this->assertSame(200, DueEmails::markLost());
-        $this->assertSame(200, Message::where("conversation_id", $conversation->id)->whereNotNull("lost_at")->count());
+        $this->assertSame(200, Message::where('conversation_id', $conversation->id)->whereNotNull('lost_at')->count());
         $this->assertSame(1, DueEmails::markLost());
         $this->assertSame(0, DueEmails::markLost());
     }

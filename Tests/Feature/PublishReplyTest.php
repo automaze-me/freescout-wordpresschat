@@ -312,4 +312,41 @@ class PublishReplyTest extends TestCase
         $this->assertNull($row->email_status);
         $this->assertCount(0, $this->mergeRedItems($target));
     }
+
+    /** The reverse direction: the live login is S's account, T has no grant. */
+    public function test_late_reply_when_the_login_belongs_to_the_source_account_fails_safe()
+    {
+        list(, $source, $target) = $this->sharedBrowserChats(7, 8, 7);
+        $reply = $this->thread($source, Thread::TYPE_MESSAGE);
+
+        $this->assertTrue($target->mergeConversations(Conversation::find($source->id), $this->adminUser()));
+        $this->fire($source, [$reply]);
+
+        $this->assertFailsSafe($source, $target, $reply);
+    }
+
+    /** Both chats are one account's, but the browser's login of that account has lapsed. */
+    public function test_late_reply_for_the_same_account_after_the_login_lapsed_fails_safe()
+    {
+        list(, $source, $target, $session) = $this->sharedBrowserChats(7, 7, 7);
+        $session->account_until = now()->subMinute();
+        $session->save();
+        $reply = $this->thread($source, Thread::TYPE_MESSAGE);
+
+        $this->assertTrue($target->mergeConversations(Conversation::find($source->id), $this->adminUser()));
+        $this->fire($source, [$reply]);
+
+        $this->assertFailsSafe($source, $target, $reply);
+    }
+
+    private function assertFailsSafe(Conversation $source, Conversation $target, Thread $reply): void
+    {
+        $rows = Message::where('thread_id', $reply->id)->get();
+        $this->assertCount(1, $rows);
+        $this->assertSame(Message::EMAIL_FAILED, (int) $rows[0]->email_status);
+        $this->assertNull($rows[0]->published_at);
+        $this->assertSame((int) $source->id, (int) $rows[0]->conversation_id);
+        $this->assertCount(0, $this->rows($target)->where('thread_id', $reply->id));
+        $this->assertCount(1, $this->mergeRedItems($target));
+    }
 }

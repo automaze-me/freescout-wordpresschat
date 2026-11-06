@@ -15,6 +15,7 @@ use Modules\WordPressChat\Services\IdentityToken;
 use Modules\WordPressChat\Services\VisitorAuth;
 use Modules\WordPressChat\Services\VisitorIdentity;
 use Modules\WordPressChat\Tests\TestCase;
+use Modules\WordPressChat\WordPressChat;
 
 /**
  * Spec §5.1.5, §5.5, §6.2 and Rulings P4–P7, P12: a WordPress login token
@@ -689,6 +690,11 @@ class AccountIdentityTest extends TestCase
 
         $this->assertNull($chat['session']->fresh()->wp_user_id);
         $this->assertSame('', Customer::find($chat['session']->customer_id)->getMainEmail());
+
+        // Control: the unmodified payload is accepted, so only the override was at fault.
+        $this->api('POST', $site, '/identity', $chat['token'], [
+            'login_token' => $this->loginToken($site, $chat['token']),
+        ])->assertStatus(200);
     }
 
     public static function malformedLoginPayloads(): array
@@ -707,29 +713,35 @@ class AccountIdentityTest extends TestCase
         $site = $this->makeSite();
         $chat = $this->startChat($site);
         $before = $chat['session']->fresh()->only(['wp_user_id', 'customer_id', 'identity', 'account_until']);
-        $now = time();
-        $payload = array_merge([
-            'typ'   => 'login',
-            'sid'   => $site->public_id,
-            'bind'  => hash('sha256', $chat['token']),
-            'iat'   => $now,
-            'exp'   => $now + IdentityToken::MAX_AGE,
-            'jti'   => bin2hex(random_bytes(16)),
-            'uid'   => 42,
-            'email' => 'anna@example.test',
-            'name'  => 'Anna Example',
-        ], $over);
-        // A null override means the key is missing altogether.
-        $payload = array_filter($payload, function ($value) {
-            return $value !== null;
-        });
-        $token = IdentityToken::seal($payload, $site->getSecret(), $site->public_id);
+        $seal = function (array $over) use ($site, $chat) {
+            $now = time();
+            $payload = array_merge([
+                'typ'   => 'login',
+                'sid'   => $site->public_id,
+                'bind'  => hash('sha256', $chat['token']),
+                'iat'   => $now,
+                'exp'   => $now + IdentityToken::MAX_AGE,
+                'jti'   => bin2hex(random_bytes(16)),
+                'uid'   => 42,
+                'email' => 'anna@example.test',
+                'name'  => 'Anna Example',
+            ], $over);
+            // A null override means the key is missing altogether.
+            $payload = array_filter($payload, function ($value) {
+                return $value !== null;
+            });
 
-        $this->api('POST', $site, '/identity', $chat['token'], ['login_token' => $token])
+            return IdentityToken::seal($payload, $site->getSecret(), $site->public_id);
+        };
+
+        $this->api('POST', $site, '/identity', $chat['token'], ['login_token' => $seal($over)])
             ->assertStatus(403)->assertExactJson(['error' => 'identity_rejected']);
 
         $this->assertSame($before, $chat['session']->fresh()->only(['wp_user_id', 'customer_id', 'identity', 'account_until']));
         $this->assertCount(0, $this->loginLineItems($chat['conversation']));
+
+        // Control: the same builder with no override is accepted.
+        $this->api('POST', $site, '/identity', $chat['token'], ['login_token' => $seal([])])->assertStatus(200);
     }
 
     public function test_logout_without_login_changes_nothing()
@@ -737,6 +749,7 @@ class AccountIdentityTest extends TestCase
         $site = $this->makeSite();
         $chat = $this->startChat($site);
         $customer = $chat['session']->fresh()->customer_id;
+        $this->assertTrue($this->visitorChannelExists($site, $chat));
 
         $this->api('POST', $site, '/logout', $chat['token'])->assertSuccessful();
 
@@ -744,6 +757,16 @@ class AccountIdentityTest extends TestCase
         $this->assertNull($session->wp_user_id);
         $this->assertSame((int) $customer, (int) $session->customer_id);
         $this->assertSame((int) $chat['conversation']->customer_id, (int) $chat['conversation']->fresh()->customer_id);
+        // The visitor's channel row survives: logging out of nothing deletes nothing.
+        $this->assertTrue($this->visitorChannelExists($site, $chat));
+    }
+
+    private function visitorChannelExists(Site $site, array $chat): bool
+    {
+        return \App\CustomerChannel::where('channel', WordPressChat::CHANNEL)
+            ->where('channel_id', $chat['session']->public_id)
+            ->where('customer_id', $chat['session']->fresh()->customer_id)
+            ->exists();
     }
 
     public function test_reattribution_leaves_other_sessions_threads_alone()

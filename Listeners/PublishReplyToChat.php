@@ -151,8 +151,8 @@ class PublishReplyToChat
      * thread_id is unique: an existing row means another run (or the
      * merge) already handled the reply. A repeated run stops at the read;
      * a concurrent one loses the insert with a unique violation, caught
-     * outside the insert's own transaction (Ruling R4). Only the run that inserted
-     * writes the item.
+     * outside the insert's own transaction (Ruling R4). Only the run that
+     * inserted writes the item.
      */
     private static function mergedAway(Conversation $snapshot, Conversation $current, Thread $thread): void
     {

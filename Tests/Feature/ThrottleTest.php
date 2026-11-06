@@ -292,7 +292,7 @@ class ThrottleTest extends TestCase
         for ($i = 0; $i < 3; $i++) {
             $chats[] = $this->startChat($site, 'Hello', [], $ip);
         }
-        $this->freshWindow(60, 10);
+        $this->freshWindow(60, 30);
 
         for ($i = 1; $i <= 60; $i++) {
             foreach ($chats as $chat) {
@@ -300,7 +300,8 @@ class ThrottleTest extends TestCase
             }
         }
 
-        $this->api('POST', $site, '/seen', $chats[0]['token'], null, [], $ip)->assertStatus(429);
+        // A brand-new token has made no request of its own: the IP cap answers.
+        $this->api('POST', $site, '/seen', $this->newChatToken(), null, [], $ip)->assertStatus(429);
     }
 
     public function test_random_token_flood_is_bounded_by_the_ip_cap()

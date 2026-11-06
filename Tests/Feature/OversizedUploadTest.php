@@ -81,11 +81,17 @@ class OversizedUploadTest extends TestCase
     {
         $site = $this->makeSite();
         $length = $this->overLimit();
-        $down = storage_path('framework/down');
-        $wasDown = file_exists($down);
+        $realDown = storage_path('framework/down');
+        $realStorage = $this->app->storagePath();
+        // A private storage path: the real framework/down is shared with the
+        // bind-mounted dev app, and a file there would take it down.
+        $tmp = sys_get_temp_dir().'/wpc-down-'.bin2hex(random_bytes(6));
+        mkdir($tmp.'/framework', 0777, true);
 
         try {
-            file_put_contents($down, json_encode(['time' => time(), 'message' => null, 'retry' => null]));
+            $this->app->useStoragePath($tmp);
+            $this->assertSame($tmp.'/framework/down', storage_path('framework/down'));
+            file_put_contents($tmp.'/framework/down', json_encode(['time' => time(), 'message' => null, 'retry' => null]));
 
             $r = $this->postWithLength($this->messagesPath($site), $length, ['HTTP_ORIGIN' => $site->origin]);
 
@@ -93,10 +99,34 @@ class OversizedUploadTest extends TestCase
             $r->assertStatus(503);
             $this->assertNotSame('too_large', $r->json()['reason'] ?? null);
         } finally {
-            if (!$wasDown && file_exists($down)) {
-                unlink($down);
-            }
+            $this->app->useStoragePath($realStorage);
+            @unlink($tmp.'/framework/down');
+            @rmdir($tmp.'/framework');
+            @rmdir($tmp);
         }
+
+        $this->assertFileDoesNotExist($realDown);
+        $this->assertDirectoryDoesNotExist($tmp);
+    }
+
+    public function test_hsts_matches_core()
+    {
+        $site = $this->makeSite();
+        config(['app.url' => 'https://helpdesk.test']);
+
+        $ours = $this->call('POST', $this->messagesPath($site), [], [], [], [
+            'CONTENT_TYPE'   => 'multipart/form-data; boundary=----wpc-test',
+            'CONTENT_LENGTH' => (string) $this->overLimit(),
+            'HTTP_ACCEPT'    => 'application/json',
+            'HTTP_ORIGIN'    => $site->origin,
+            'HTTPS'          => 'on',
+        ]);
+        $core = $this->call('GET', '/login', [], [], [], ['HTTPS' => 'on']);
+
+        $ours->assertStatus(422);
+        $hsts = $core->headers->get('Strict-Transport-Security');
+        $this->assertNotNull($hsts, 'core sends HSTS on https');
+        $this->assertSame($hsts, $ours->headers->get('Strict-Transport-Security'));
     }
 
     public function test_the_provider_puts_it_in_front_of_the_global_stack()

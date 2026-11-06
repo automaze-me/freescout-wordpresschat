@@ -172,7 +172,7 @@ class IdentityPayload
      */
     private static function open(Site $site, $token, string $type, string $bindHash): ?array
     {
-        if (!is_string($token) || $token === '' || strlen($token) > IdentityToken::MAX_TOKEN_LENGTH) {
+        if (!is_string($token) || $token === '') {
             return null;
         }
 
