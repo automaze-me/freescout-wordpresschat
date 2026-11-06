@@ -55,7 +55,8 @@ use Modules\WordPressChat\WordPressChat;
  * `conversation.merged`, where MergeChat fails queued rows, and MergeChat
  * leaves "sending" rows to the job. A job that claims in that window, or
  * reads the conversation after the move, finds the replies in the merge
- * target. It emails them there only when one browser holds both chats;
+ * target. It emails them there only when one browser has a full or uncut grant
+ * on both chats (Visibility::oneVisitor());
  * otherwise the batch fails, with MergeChat's red item on the target.
  */
 class SendChatEmail implements ShouldQueue
@@ -546,8 +547,8 @@ class SendChatEmail implements ShouldQueue
 
     /**
      * Whether some row of $ids belongs to a chat that was merged into
-     * $current, the thread's conversation now, and no browser holds both
-     * (Ruling P5). A target that is no website chat never gets them, as in
+     * $current, the thread's conversation now, and no browser has a full or
+     * uncut grant on both (Ruling P5, R7). A target that is no website chat never gets them, as in
      * PublishReplyToChat.
      */
     private static function mergedIntoAnotherVisitor(array $ids, Conversation $current): bool

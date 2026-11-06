@@ -268,6 +268,12 @@ class PresenceTest extends TestCase
         $this->bindToAccount($chat, $site, 7, now()->subMinute());
         $fixtures['lapsed login'] = [$chat, false];
 
+        // Account-bound, login lapsed, but a redeemed link: verified_at alone grants.
+        $chat = $this->startChat($site, 'link only');
+        $this->bindToAccount($chat, $site, 7, now()->subMinute());
+        Access::where('session_id', $chat['session']->id)->update(['verified_at' => now()]);
+        $fixtures['verified, lapsed login'] = [$chat, true];
+
         // A cut-off.
         $chat = $this->startChat($site, 'cutoff');
         $state = ConversationState::of($chat['conversation']);

@@ -343,8 +343,8 @@ class PollAndSeenTest extends TestCase
         $site = $this->makeSite();
         list($token, $first, $conv) = $this->visitorSays($site, 'hello');
         \Modules\WordPressChat\Entities\Access::where('conversation_id', $conv)->update(['verified_at' => now()]);
-        $inside = $this->emailChoiceRow($conv, 119);
-        $outside = $this->emailChoiceRow($conv, 121);
+        $inside = $this->emailChoiceRow($conv, 115);
+        $outside = $this->emailChoiceRow($conv, 125);
         list(, $latest) = $this->agentThread($conv);
 
         $ids = array_column($this->poll($site, $token, $latest->id)->assertStatus(200)->json()['messages'], 'id');

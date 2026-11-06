@@ -185,12 +185,13 @@ class Visibility
     }
 
     /**
-     * Whether one browser holds Access to both conversations and a grant on
-     * both, i.e. they are one visitor's. A reply written to one of them may
-     * then reach the other after a merge (Ruling P5, "Late reply after a
-     * merge"). A lapsed Access row does not count: a browser that switched
-     * accounts has no grant on the other account's chat, and the reply must
-     * not reach that account's other devices.
+     * Whether one browser holds Access to both conversations with a grant
+     * on both that is full or uncut, i.e. they are one visitor's. A reply
+     * written to one of them may then reach the other after a merge (Ruling
+     * P5, "Late reply after a merge"). A lapsed Access row does not count:
+     * a browser that switched accounts has no grant on the other account's
+     * chat. Neither does a cut-off one (Ruling R7): it may be a stranger who
+     * typed the address, and must not receive a reply above its cut-off.
      */
     public static function oneVisitor(int $sourceId, int $targetId): bool
     {
@@ -215,10 +216,16 @@ class Visibility
             return false;
         }
 
-        $states = [
-            $sourceId => ConversationState::of($conversations->get($sourceId)),
-            $targetId => ConversationState::of($conversations->get($targetId)),
-        ];
+        // A plain read: a visibility check never writes. A conversation
+        // without a state row yet gets an unsaved blank one (as in
+        // Presence::line()), so a plain chat is granted.
+        $rows = ConversationState::whereIn('conversation_id', [$sourceId, $targetId])->get()->keyBy('conversation_id');
+        $states = [];
+
+        foreach ([$sourceId, $targetId] as $id) {
+            $states[$id] = $rows->get($id) ?: (new ConversationState())->newFromBuilder(['conversation_id' => $id]);
+        }
+
         $accesses = Access::whereIn('conversation_id', [$sourceId, $targetId])
             ->whereIn('session_id', $sessionIds)
             ->get()
@@ -231,14 +238,24 @@ class Visibility
                 continue;
             }
 
-            if (self::grantFor($held->get($sourceId), $session, $states[$sourceId]) !== null
-                && self::grantFor($held->get($targetId), $session, $states[$targetId]) !== null
-            ) {
+            $onSource = self::grantFor($held->get($sourceId), $session, $states[$sourceId]);
+            $onTarget = self::grantFor($held->get($targetId), $session, $states[$targetId]);
+
+            if (self::seesEverything($onSource) && self::seesEverything($onTarget)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Whether a grant lets its browser read every row of its chat: a
+     * verified one, or one without a cut-off (Ruling R7).
+     */
+    private static function seesEverything(?array $grant): bool
+    {
+        return $grant !== null && ($grant['full'] || $grant['cutoff'] === null);
     }
 
     /**

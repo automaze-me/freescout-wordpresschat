@@ -751,9 +751,39 @@ class DeliveryHardeningTest extends TestCase
         $row = Message::where('thread_id', $thread->id)->firstOrFail();
         $mailer = $this->fake();
 
-        list($ran) = $this->mergeWithJobInTheWindow($target, $source, $job, $row);
+        list($ran, $statusWhenRun) = $this->mergeWithJobInTheWindow($target, $source, $job, $row);
 
         $this->assertSame(1, $ran);
+        $this->assertSame(Message::EMAIL_QUEUED, $statusWhenRun);
+        $this->assertCount(0, $mailer->calls);
+        $this->assertSame(Message::EMAIL_FAILED, $this->emailStatus($row));
+        $this->assertCount(1, $this->redItems($target));
+    }
+
+    /**
+     * Ruling R7: a browser cut off on the source (a stranger who typed the
+     * address) must not receive the source's reply through a merge, nor may
+     * the address typed on the target be emailed it.
+     */
+    public function test_email_choice_job_never_emails_a_browser_cut_off_on_the_source()
+    {
+        list(, $source, $target) = $this->sharedBrowserChats(0, 0, 0);
+        $state = ConversationState::of($source);
+        $state->cutoff_message_id = 1;
+        $state->cutoff_reason = ConversationState::CUTOFF_EMAIL;
+        $state->save();
+        $source->customer_email = 'anna@example.test';
+        $source->save();
+        $target->customer_email = 'bert@example.test';
+        $target->save();
+        list($thread, $job) = $this->emailChoice($source);
+        $row = Message::where('thread_id', $thread->id)->firstOrFail();
+        $mailer = $this->fake();
+
+        list($ran, $statusWhenRun) = $this->mergeWithJobInTheWindow($target, $source, $job, $row);
+
+        $this->assertSame(1, $ran);
+        $this->assertSame(Message::EMAIL_QUEUED, $statusWhenRun);
         $this->assertCount(0, $mailer->calls);
         $this->assertSame(Message::EMAIL_FAILED, $this->emailStatus($row));
         $this->assertCount(1, $this->redItems($target));

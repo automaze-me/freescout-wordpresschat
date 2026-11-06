@@ -23,7 +23,7 @@ use Modules\WordPressChat\WordPressChat;
  *
  * A reply still inside core's undo window has no row yet: its publish
  * runs after the merge, and PublishReplyToChat fails it the same way,
- * unless one browser holds both chats (Ruling P5).
+ * unless one browser has a full or uncut grant on both chats (Ruling P5, R7).
  *
  * Re-pointing the rows and the browsers' access to $target is not done
  * here: it changes who can see what.

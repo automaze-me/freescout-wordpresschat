@@ -28,7 +28,8 @@ use Modules\WordPressChat\WordPressChat;
  * Late reply after a merge (Ruling P5): a reply written to chat S whose
  * thread now sits in conversation T (S was merged into T inside core's undo
  * window, or before a repeated publish) goes into T only when some browser
- * holds Access to both, i.e. both chats are one visitor's. Otherwise T's
+ * has a full or uncut grant on both, i.e. both chats are one visitor's
+ * (Visibility::oneVisitor(), Ruling R7). Otherwise T's
  * browsers belong to someone else: the reply fails like one whose chat was
  * merged into an email conversation (mergedAway()), and is never re-pointed.
  */

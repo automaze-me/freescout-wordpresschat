@@ -339,6 +339,46 @@ class PublishReplyTest extends TestCase
         $this->assertFailsSafe($source, $target, $reply);
     }
 
+    /** Ruling R7: X is cut off on S (a stranger who typed the address) and uncut on T. */
+    public function test_late_reply_to_a_browser_cut_off_on_the_source_fails_safe()
+    {
+        list(, $source, $target) = $this->sharedBrowserChats(0, 0, 0);
+        $state = \Modules\WordPressChat\Entities\ConversationState::of($source);
+        $state->cutoff_message_id = 1;
+        $state->cutoff_reason = \Modules\WordPressChat\Entities\ConversationState::CUTOFF_EMAIL;
+        $state->save();
+        $reply = $this->thread($source, Thread::TYPE_MESSAGE);
+
+        $this->assertTrue($target->mergeConversations(Conversation::find($source->id), $this->adminUser()));
+        $this->fire($source, [$reply]);
+
+        $this->assertFailsSafe($source, $target, $reply);
+    }
+
+    /**
+     * Both grants must come from the same browser: X is granted on S only
+     * (its login is U's), Y on T only (its login is V's); each holds Access
+     * on both chats.
+     */
+    public function test_late_reply_with_each_browser_granted_on_one_side_only_fails_safe()
+    {
+        list(, $source, $target, $x) = $this->sharedBrowserChats(7, 8, 7);
+        $y = \Modules\WordPressChat\Entities\Session::find(
+            Access::where('conversation_id', $target->id)->where('session_id', '!=', $x->id)->firstOrFail()->session_id
+        );
+        Access::create(['session_id' => $y->id, 'conversation_id' => $source->id]);
+        $y->wp_user_id = 8;
+        $y->account_until = now()->addHour();
+        $y->save();
+        $this->assertFalse(\Modules\WordPressChat\Services\Visibility::oneVisitor((int) $source->id, (int) $target->id));
+        $reply = $this->thread($source, Thread::TYPE_MESSAGE);
+
+        $this->assertTrue($target->mergeConversations(Conversation::find($source->id), $this->adminUser()));
+        $this->fire($source, [$reply]);
+
+        $this->assertFailsSafe($source, $target, $reply);
+    }
+
     private function assertFailsSafe(Conversation $source, Conversation $target, Thread $reply): void
     {
         $rows = Message::where('thread_id', $reply->id)->get();
