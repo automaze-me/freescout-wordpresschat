@@ -1,3 +1,22 @@
+/* Identity badge, presence line and order-only warning (ConversationHeader). */
+.wpc-chat-header {
+    margin: 0 0 10px;
+    padding: 0 20px;
+}
+/* Chat mode: core renders the header inside the subject, after its floated
+   chips (.conv-tags). It starts on its own line below them, aligned with the
+   subject, as in normal mode. */
+.conv-subjwrap .wpc-chat-header {
+    clear: both;
+    margin: 0;
+    padding: 10px 0 0;
+}
+.wpc-chat-header .wpc-presence {
+    margin: 6px 0 0;
+}
+.wpc-chat-header .wpc-order-warning {
+    margin: 8px 0 0;
+}
 .wpc-reply-picker {
     margin: 8px 20px 0;
 }
