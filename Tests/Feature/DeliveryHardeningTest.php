@@ -891,4 +891,54 @@ class DeliveryHardeningTest extends TestCase
             $this->assertCount(0, $this->redItems($target), $label);
         }
     }
+
+    /** drop() and the locked read are the only two looks at the queued rows when none is left out. */
+    public function test_claim_reads_queued_rows_twice_when_none_is_left_out()
+    {
+        list(, , $conversation) = $this->chat();
+        list($thread, $row) = $this->reply($conversation);
+        $this->queued([$row], (int) $thread->id, 60);
+        $mailer = $this->fake();
+        $reads = 0;
+
+        \DB::listen(function ($query) use (&$reads) {
+            if (stripos($query->sql, 'select') === 0
+                && strpos($query->sql, 'wordpresschat_messages') !== false
+                && strpos($query->sql, 'email_status') !== false) {
+                $reads++;
+            }
+        });
+        app()->call([new SendChatEmail((int) $conversation->id, (int) $thread->id), 'handle']);
+
+        $this->assertCount(1, $mailer->calls);
+        $this->assertSame(Message::EMAIL_SENT, $this->emailStatus($row));
+        $this->assertSame(2, $reads);
+    }
+
+    /** A chat row seen after drop() read it is not claimed and goes back to null. */
+    public function test_claim_still_releases_a_row_seen_after_drop()
+    {
+        list(, , $conversation) = $this->chat();
+        list($t1, $seen) = $this->reply($conversation, 'Seen later');
+        list($t2, $unseen) = $this->reply($conversation, 'Unseen');
+        $this->queued([$seen, $unseen], (int) $t2->id, 60);
+        $mailer = $this->fake();
+        $raced = 0;
+
+        // drop()'s read is the job's first select on the messages table.
+        \DB::listen(function ($query) use ($seen, &$raced) {
+            if ($raced || stripos($query->sql, 'select') !== 0 || strpos($query->sql, 'wordpresschat_messages') === false) {
+                return;
+            }
+            $raced++;
+            Message::where('id', $seen->id)->update(['seen_at' => now()]);
+        });
+        app()->call([new SendChatEmail((int) $conversation->id, (int) $t2->id), 'handle']);
+
+        $this->assertSame(1, $raced);
+        $this->assertCount(1, $mailer->calls);
+        $this->assertNull($this->emailStatus($seen));
+        $this->assertNull($seen->fresh()->email_thread_id);
+        $this->assertSame(Message::EMAIL_SENT, $this->emailStatus($unseen));
+    }
 }

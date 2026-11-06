@@ -907,4 +907,58 @@ class FallbackEmailTest extends TestCase
         $this->assertNull($this->emailStatus($row));
         Queue::assertNotPushed(SendChatEmail::class);
     }
+
+    /** The final attempt's failure is one log line with the raw error, though friendly() maps it. */
+    public function test_final_attempt_logs_the_error_once()
+    {
+        $raw = 'Expected response code 250 but got code "535", with message "535 Authentication failed"';
+        list(, , $conversation) = $this->chat();
+        list($thread, $row) = $this->reply($conversation);
+        Queue::fake();
+
+        $this->assertSame(1, DueEmails::sweep());
+        $this->fake(new \RuntimeException($raw));
+        \Log::spy();
+
+        $last = new SendChatEmail((int) $conversation->id, (int) $thread->id);
+        $last->setJob($this->queueJob(SendChatEmail::TRIES, null));
+        $this->runJob($last);
+
+        $this->assertSame(Message::EMAIL_FAILED, $this->emailStatus($row));
+        $items = $this->failureItems($conversation);
+        $this->assertCount(1, $items);
+        $this->assertSame(
+            'Email to the visitor failed: the mail server refused the login (SMTP 535)',
+            $items[0]->getActionText('', false)
+        );
+        \Log::shouldHaveReceived('error')->once();
+        // The final-attempt line carries the raw error as its exception.
+        \Log::shouldHaveReceived('error')->withArgs(function ($message, $context = []) use ($raw) {
+            return isset($context['exception']) && strpos($context['exception']->getMessage(), $raw) !== false;
+        })->once();
+    }
+
+    /** A raw reason over 200 characters that matches no pattern: the agent sees it cut, the log keeps it whole. */
+    public function test_failBatch_logs_a_long_unmatched_reason_in_full()
+    {
+        $reason = str_repeat('y', 300);
+        list(, , $conversation) = $this->chat();
+        list($thread, $row) = $this->reply($conversation);
+        $this->queue([$row], (int) $thread->id);
+        Message::where('id', $row->id)->update(['email_status' => Message::EMAIL_SENDING]);
+        \Log::spy();
+
+        $this->assertSame(1, SendChatEmail::failBatch([(int) $row->id], Message::EMAIL_SENDING, $conversation, (int) $conversation->id, $reason));
+
+        $items = $this->failureItems($conversation);
+        $this->assertCount(1, $items);
+        $this->assertSame(
+            'Email to the visitor failed: '.str_repeat('y', 200),
+            $items[0]->getActionText('', false)
+        );
+        \Log::shouldHaveReceived('error')->once();
+        \Log::shouldHaveReceived('error')->withArgs(function ($message) use ($reason) {
+            return strpos($message, $reason) !== false;
+        })->once();
+    }
 }

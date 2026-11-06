@@ -283,17 +283,26 @@ class SendChatEmail implements ShouldQueue
      */
     private function claim(): array
     {
-        $ids = DB::transaction(function () {
-            // A chat row seen since drop() ran is left out (it goes back
-            // through drop() below); an email-choice row is sent regardless.
-            $ids = array_map('intval', Message::where('email_thread_id', $this->threadId)
+        $leftOut = false;
+
+        $ids = DB::transaction(function () use (&$leftOut) {
+            // Every queued row, read under the lock. A chat row seen since
+            // drop() ran is left out (released below); an email-choice row
+            // is sent regardless.
+            $rows = Message::where('email_thread_id', $this->threadId)
                 ->where('email_status', Message::EMAIL_QUEUED)
-                ->where(function ($q) {
-                    $q->where('via', Message::VIA_EMAIL)->orWhereNull('seen_at');
-                })
                 ->lockForUpdate()
-                ->pluck('id')
-                ->all());
+                ->get(['id', 'via', 'seen_at']);
+
+            $ids = [];
+
+            foreach ($rows as $row) {
+                if ((int) $row->via === Message::VIA_EMAIL || $row->seen_at === null) {
+                    $ids[] = (int) $row->id;
+                } else {
+                    $leftOut = true;
+                }
+            }
 
             if (!$ids) {
                 return [];
@@ -306,8 +315,10 @@ class SendChatEmail implements ShouldQueue
             return $changed ? $ids : [];
         });
 
-        // Rows the locked read left out are still queued: release them.
-        self::drop($this->threadId);
+        // Rows the split left out are still queued: release them.
+        if ($leftOut) {
+            self::drop($this->threadId);
+        }
 
         return $ids;
     }
@@ -462,7 +473,8 @@ class SendChatEmail implements ShouldQueue
             Message::EMAIL_SENDING,
             $conversation,
             $this->conversationId,
-            $message !== '' ? $message : get_class($e)
+            $message !== '' ? $message : get_class($e),
+            true
         );
     }
 
@@ -471,8 +483,12 @@ class SendChatEmail implements ShouldQueue
      * the rows (this job, its failed() hook, or the stale check), so a
      * batch never gets two. $conversationId is the fallback when the
      * batch's conversation is not known. Returns the number of rows moved.
+     *
+     * The log keeps the full raw error whenever the agent sees something
+     * else (a mapped reason or a cut one). $logged is true when the caller
+     * already logged this failure (retryOrFail()'s final-attempt line).
      */
-    public static function failBatch(array $ids, int $from, ?Conversation $conversation, int $conversationId, string $reason): int
+    public static function failBatch(array $ids, int $from, ?Conversation $conversation, int $conversationId, string $reason, bool $logged = false): int
     {
         $changed = self::moveToFailed($ids, $from);
 
@@ -483,7 +499,7 @@ class SendChatEmail implements ShouldQueue
         $conversation = $conversation ?: Conversation::find($conversationId);
         $friendly = self::friendly($reason);
 
-        if ($friendly !== mb_substr($reason, 0, self::REASON_LENGTH)) {
+        if (!$logged && $friendly !== $reason) {
             // The agent sees the short reason; the log keeps the full error.
             \Log::error('[WordPressChat] Fallback email for conversation #'.$conversationId.' failed: '.$reason);
         }
