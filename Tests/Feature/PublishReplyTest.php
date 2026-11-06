@@ -262,4 +262,54 @@ class PublishReplyTest extends TestCase
         $this->assertSame($past->timestamp, $fresh->fallback_due_at->timestamp);
         $this->assertSame($past->timestamp, $fresh->published_at->timestamp);
     }
+
+    private function mergeRedItems(Conversation $conversation)
+    {
+        return Thread::where('conversation_id', $conversation->id)
+            ->where('type', Thread::TYPE_LINEITEM)
+            ->get()
+            ->filter(function ($thread) {
+                return (bool) $thread->getMeta(\Modules\WordPressChat\Services\FailureLineItem::FAILURE_META);
+            })
+            ->values();
+    }
+
+    /**
+     * Review Focus 1: one shared browser, two accounts. X holds both chats
+     * but is logged in as V, so it has no grant on U's chat S. A reply
+     * written on S and published after S merged into T must not reach V's
+     * other devices.
+     */
+    public function test_late_reply_after_an_account_switch_on_a_shared_browser_fails_safe()
+    {
+        list(, $source, $target) = $this->sharedBrowserChats(7, 8, 8);
+        $reply = $this->thread($source, Thread::TYPE_MESSAGE);
+
+        $this->assertTrue($target->mergeConversations(Conversation::find($source->id), $this->adminUser()));
+        $this->fire($source, [$reply]);
+
+        $rows = Message::where('thread_id', $reply->id)->get();
+        $this->assertCount(1, $rows);
+        $this->assertSame(Message::EMAIL_FAILED, (int) $rows[0]->email_status);
+        $this->assertNull($rows[0]->published_at);
+        $this->assertSame((int) $source->id, (int) $rows[0]->conversation_id);
+        $this->assertCount(0, $this->rows($target)->where('thread_id', $reply->id));
+        $this->assertCount(1, $this->mergeRedItems($target));
+    }
+
+    /** The positive control: the same account on both chats, login live. */
+    public function test_late_reply_for_the_same_account_with_a_live_login_publishes()
+    {
+        list(, $source, $target) = $this->sharedBrowserChats(7, 7, 7);
+        $reply = $this->thread($source, Thread::TYPE_MESSAGE);
+
+        $this->assertTrue($target->mergeConversations(Conversation::find($source->id), $this->adminUser()));
+        $this->fire($source, [$reply]);
+
+        $row = Message::where('thread_id', $reply->id)->firstOrFail();
+        $this->assertSame((int) $target->id, (int) $row->conversation_id);
+        $this->assertNotNull($row->published_at);
+        $this->assertNull($row->email_status);
+        $this->assertCount(0, $this->mergeRedItems($target));
+    }
 }

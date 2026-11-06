@@ -185,21 +185,60 @@ class Visibility
     }
 
     /**
-     * Whether some browser holds Access to both conversations, i.e. they
-     * are one visitor's. A reply written to one of them may then reach the
-     * other after a merge (Ruling P5, "Late reply after a merge").
+     * Whether one browser holds Access to both conversations and a grant on
+     * both, i.e. they are one visitor's. A reply written to one of them may
+     * then reach the other after a merge (Ruling P5, "Late reply after a
+     * merge"). A lapsed Access row does not count: a browser that switched
+     * accounts has no grant on the other account's chat, and the reply must
+     * not reach that account's other devices.
      */
     public static function oneVisitor(int $sourceId, int $targetId): bool
     {
         $table = (new Access())->getTable();
 
-        return Access::where('conversation_id', $sourceId)
+        $sessionIds = Access::where('conversation_id', $sourceId)
             ->whereIn('session_id', function ($q) use ($table, $targetId) {
                 $q->select('session_id')
                     ->from($table)
                     ->where('conversation_id', $targetId);
             })
-            ->exists();
+            ->pluck('session_id')
+            ->all();
+
+        if (!$sessionIds) {
+            return false;
+        }
+
+        $conversations = Conversation::whereIn('id', [$sourceId, $targetId])->get()->keyBy('id');
+
+        if (!$conversations->has($sourceId) || !$conversations->has($targetId)) {
+            return false;
+        }
+
+        $states = [
+            $sourceId => ConversationState::of($conversations->get($sourceId)),
+            $targetId => ConversationState::of($conversations->get($targetId)),
+        ];
+        $accesses = Access::whereIn('conversation_id', [$sourceId, $targetId])
+            ->whereIn('session_id', $sessionIds)
+            ->get()
+            ->groupBy('session_id');
+
+        foreach (Session::whereIn('id', $sessionIds)->get() as $session) {
+            $held = $accesses->get($session->id)->keyBy('conversation_id');
+
+            if (!$held->has($sourceId) || !$held->has($targetId)) {
+                continue;
+            }
+
+            if (self::grantFor($held->get($sourceId), $session, $states[$sourceId]) !== null
+                && self::grantFor($held->get($targetId), $session, $states[$targetId]) !== null
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

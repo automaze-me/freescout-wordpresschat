@@ -3,9 +3,11 @@
 namespace Modules\WordPressChat\Tests\Feature;
 
 use Modules\WordPressChat\Entities\Access;
+use Modules\WordPressChat\Entities\ConversationState;
 use Modules\WordPressChat\Entities\Session;
 use Modules\WordPressChat\Services\ConversationHeader;
 use Modules\WordPressChat\Services\Presence;
+use Modules\WordPressChat\Services\Visibility;
 use Modules\WordPressChat\Tests\TestCase;
 
 /** Presence line for agents: polls record the page path, the header shows it. */
@@ -223,8 +225,7 @@ class PresenceTest extends TestCase
         $this->api('POST', $site, '/logout', $chat['token'])->assertStatus(204);
 
         $this->assertNotNull(Access::where('session_id', $chat['session']->id)->first());
-        $line = Presence::line($chat['conversation']);
-        $this->assertTrue($line === null || strpos($line, 'On the site now') === false, (string) $line);
+        $this->assertNull(Presence::line($chat['conversation']));
     }
 
     public function test_line_runs_one_query()
@@ -240,5 +241,62 @@ class PresenceTest extends TestCase
 
         $this->assertSame('On the site now · /a', Presence::line($chat['conversation']));
         $this->assertCount(1, $queries, implode("\n", $queries));
+    }
+
+    /**
+     * line() builds its models from one joined read; a column it forgets
+     * would change a grant. It must agree with grantFor() on fully loaded
+     * models, for every kind of grant.
+     */
+    public function test_line_agrees_with_grantFor()
+    {
+        $site = $this->makeSite();
+        $fixtures = [];
+
+        // Verified.
+        $chat = $this->startChat($site, 'verified');
+        Access::where('session_id', $chat['session']->id)->update(['verified_at' => now()]);
+        $fixtures['verified'] = [$chat, true];
+
+        // Account-bound with a live login.
+        $chat = $this->startChat($site, 'live');
+        $this->bindToAccount($chat, $site, 7, now()->addHour());
+        $fixtures['live login'] = [$chat, true];
+
+        // Account-bound, login lapsed.
+        $chat = $this->startChat($site, 'lapsed');
+        $this->bindToAccount($chat, $site, 7, now()->subMinute());
+        $fixtures['lapsed login'] = [$chat, false];
+
+        // A cut-off.
+        $chat = $this->startChat($site, 'cutoff');
+        $state = ConversationState::of($chat['conversation']);
+        $state->cutoff_message_id = 1;
+        $state->cutoff_reason = ConversationState::CUTOFF_EMAIL;
+        $state->save();
+        $fixtures['cutoff'] = [$chat, true];
+
+        foreach ($fixtures as $name => $fixture) {
+            list($chat, $granted) = $fixture;
+            Session::where('id', $chat['session']->id)->update(['last_seen_at' => now(), 'page_path' => '/p']);
+
+            $grant = Visibility::grantFor(
+                Access::where('session_id', $chat['session']->id)->where('conversation_id', $chat['conversation']->id)->firstOrFail(),
+                Session::find($chat['session']->id),
+                ConversationState::where('conversation_id', $chat['conversation']->id)->firstOrFail()
+            );
+
+            $this->assertSame($granted, $grant !== null, $name);
+            $this->assertSame($grant !== null, Presence::line($chat['conversation']) !== null, $name);
+        }
+    }
+
+    private function bindToAccount(array $chat, $site, int $userId, $until): void
+    {
+        $state = ConversationState::of($chat['conversation']);
+        $state->site_id = $site->id;
+        $state->wp_user_id = $userId;
+        $state->save();
+        Session::where('id', $chat['session']->id)->update(['wp_user_id' => $userId, 'account_until' => $until]);
     }
 }

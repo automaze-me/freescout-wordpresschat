@@ -735,6 +735,30 @@ class DeliveryHardeningTest extends TestCase
         $this->assertCount(1, $this->redItems($target));
     }
 
+    /**
+     * Review Focus 1, the email path: one browser holds both chats but is
+     * logged in as the other chat's account. The email-choice job in the
+     * merge window must not email that account's address.
+     */
+    public function test_email_choice_job_after_an_account_switch_never_emails_the_other_account()
+    {
+        list(, $source, $target) = $this->sharedBrowserChats(7, 8, 8);
+        $source->customer_email = 'anna@example.test';
+        $source->save();
+        $target->customer_email = 'bert@example.test';
+        $target->save();
+        list($thread, $job) = $this->emailChoice($source);
+        $row = Message::where('thread_id', $thread->id)->firstOrFail();
+        $mailer = $this->fake();
+
+        list($ran) = $this->mergeWithJobInTheWindow($target, $source, $job, $row);
+
+        $this->assertSame(1, $ran);
+        $this->assertCount(0, $mailer->calls);
+        $this->assertSame(Message::EMAIL_FAILED, $this->emailStatus($row));
+        $this->assertCount(1, $this->redItems($target));
+    }
+
     /** Both chats are one browser's: the job in the merge window still emails that visitor. */
     public function test_fallback_job_in_the_merge_window_of_one_browsers_chats_still_sends()
     {

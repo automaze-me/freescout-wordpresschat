@@ -209,4 +209,41 @@ class ConversationHeaderTest extends TestCase
         $this->assertStringContainsString('via email', ConversationHeader::threadChip($email));
         $this->assertSame('', ConversationHeader::threadChip($chatThread));
     }
+
+    /**
+     * Core moves the threads on a merge; the module's rows keep the source
+     * conversation id, so the chip must follow the thread, not the row.
+     */
+    public function test_via_email_chip_survives_a_chat_into_chat_merge()
+    {
+        $site = $this->makeSite();
+        $source = $this->startChat($site, 'Question on S')['conversation'];
+        $target = $this->startChat($site, 'Question on T')['conversation'];
+
+        $email = new Thread();
+        $email->conversation_id = $source->id;
+        $email->type = Thread::TYPE_CUSTOMER;
+        $email->status = Thread::STATUS_ACTIVE;
+        $email->state = Thread::STATE_PUBLISHED;
+        $email->body = '<p>Hi</p>';
+        $email->source_type = Thread::SOURCE_TYPE_EMAIL;
+        $email->source_via = Thread::PERSON_CUSTOMER;
+        $email->customer_id = $source->customer_id;
+        $email->created_by_customer_id = $source->customer_id;
+        $email->save();
+        Message::create([
+            'conversation_id' => $source->id,
+            'thread_id'       => $email->id,
+            'direction'       => Message::DIRECTION_IN,
+            'via'             => Message::VIA_EMAIL,
+            'published_at'    => now(),
+        ]);
+
+        $this->assertTrue($target->mergeConversations(\App\Conversation::find($source->id), $this->adminUser()));
+        ConversationHeader::clearCache();
+
+        $moved = Thread::find($email->id);
+        $this->assertSame((int) $target->id, (int) $moved->conversation_id);
+        $this->assertStringContainsString('via email', ConversationHeader::threadChip($moved));
+    }
 }

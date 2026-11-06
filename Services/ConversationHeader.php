@@ -22,7 +22,9 @@ class ConversationHeader
     /**
      * conversation_id => ['email' => thread ids that arrived by email,
      * 'chat' => whether it is a website chat]: two reads per conversation
-     * per request, not per thread.
+     * per request, not per thread. The memo lives as long as the process:
+     * meant for web requests only, like DeliveryMarker's (a queue worker or
+     * a long-running test must call clearCache()).
      *
      * @var array<int, array{email: int[], chat: bool}>
      */
@@ -70,8 +72,14 @@ class ConversationHeader
         $known = &self::$chips[$thread->conversation_id];
 
         if ($known['email'] === null) {
-            $known['email'] = Message::where('conversation_id', $thread->conversation_id)
-                ->where('via', Message::VIA_EMAIL)
+            // By the thread's current conversation, not the row's: core's
+            // merge moves threads and leaves the module's rows behind.
+            $known['email'] = Message::where('via', Message::VIA_EMAIL)
+                ->whereIn('thread_id', function ($q) use ($thread) {
+                    $q->select('id')
+                        ->from((new Thread())->getTable())
+                        ->where('conversation_id', $thread->conversation_id);
+                })
                 ->whereNotNull('thread_id')
                 ->pluck('thread_id')
                 ->map(function ($id) {

@@ -326,4 +326,47 @@ class PollAndSeenTest extends TestCase
 
         $this->assertSame(array_slice($ids, 100), array_column($rest, 'id'));
     }
+
+    /** An email-choice row (published email reply) on $conversationId, published $secondsAgo s ago. */
+    private function emailChoiceRow($conversationId, int $secondsAgo)
+    {
+        list($thread, $row) = $this->agentThread($conversationId);
+        $row->via = Message::VIA_EMAIL;
+        $row->published_at = now()->subSeconds($secondsAgo);
+        $row->save();
+
+        return $row;
+    }
+
+    public function test_email_choice_window_edges()
+    {
+        $site = $this->makeSite();
+        list($token, $first, $conv) = $this->visitorSays($site, 'hello');
+        \Modules\WordPressChat\Entities\Access::where('conversation_id', $conv)->update(['verified_at' => now()]);
+        $inside = $this->emailChoiceRow($conv, 119);
+        $outside = $this->emailChoiceRow($conv, 121);
+        list(, $latest) = $this->agentThread($conv);
+
+        $ids = array_column($this->poll($site, $token, $latest->id)->assertStatus(200)->json()['messages'], 'id');
+
+        $this->assertContains((int) $inside->id, $ids);
+        $this->assertNotContains((int) $outside->id, $ids);
+    }
+
+    public function test_email_choice_window_never_adds_a_row_the_grant_hides()
+    {
+        $site = $this->makeSite();
+        list($token, $first, $conv) = $this->visitorSays($site, 'hello');
+        $state = \Modules\WordPressChat\Entities\ConversationState::of(Conversation::find($conv));
+        $state->cutoff_message_id = $first;
+        $state->cutoff_reason = \Modules\WordPressChat\Entities\ConversationState::CUTOFF_VERIFIED;
+        $state->save();
+        $hidden = $this->emailChoiceRow($conv, 10);
+        $this->assertGreaterThan($state->cutoff_message_id, $hidden->id);
+        list(, $latest) = $this->agentThread($conv);
+
+        $json = $this->poll($site, $token, $latest->id)->assertStatus(200)->json();
+
+        $this->assertNotContains((int) $hidden->id, array_column($json['messages'], 'id'));
+    }
 }

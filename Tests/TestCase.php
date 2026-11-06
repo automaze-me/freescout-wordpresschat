@@ -337,4 +337,35 @@ abstract class TestCase extends CoreTestCase
             'response'     => $response,
         ];
     }
+
+    /**
+     * One browser X with Access on two chats S and T, bound to WordPress
+     * accounts $accountS and $accountT, and a live login of $login on X.
+     * T also has a browser Y of its own (the chat T started with). Returns
+     * [site, S, T, X].
+     */
+    protected function sharedBrowserChats(int $accountS, int $accountT, int $login): array
+    {
+        $site = $this->makeSite();
+        $first = $this->startChat($site, 'Question on S');
+        $second = $this->startChat($site, 'Question on T');
+        $source = \App\Conversation::find($first['conversation']->id);
+        $target = \App\Conversation::find($second['conversation']->id);
+        $x = $first['session'];
+
+        \Modules\WordPressChat\Entities\Access::create(['session_id' => $x->id, 'conversation_id' => $target->id]);
+
+        foreach ([[$source, $accountS], [$target, $accountT]] as $pair) {
+            $state = \Modules\WordPressChat\Entities\ConversationState::of($pair[0]);
+            $state->site_id = $site->id;
+            $state->wp_user_id = $pair[1];
+            $state->save();
+        }
+
+        $x->wp_user_id = $login;
+        $x->account_until = now()->addHour();
+        $x->save();
+
+        return [$site, $source, $target, $x];
+    }
 }
