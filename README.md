@@ -3,8 +3,8 @@
 Live chat from WordPress websites as a channel for [FreeScout](https://freescout.net).
 
 This is the FreeScout half of the chat. The visitor-facing half is the WordPress plugin
-**Live Chat for FreeScout**, which shows the chat widget on your website and talks to this
-module. A visitor's chat becomes a FreeScout conversation; agents reply from FreeScout as usual.
+[Live Chat for FreeScout](https://github.com/automaze-me/live-chat-for-freescout), which shows
+the chat widget on your website and talks to this module. A visitor's chat becomes a FreeScout conversation; agents reply from FreeScout as usual.
 A reply the visitor does not see in the chat within a short delay is sent to them by email, with
 a link that reopens the chat.
 
