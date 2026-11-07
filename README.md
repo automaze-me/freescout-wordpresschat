@@ -96,9 +96,13 @@ regenerated.
    - **Max attachment size** – in MB (1 to 50; default 10). PHP's limits can lower it, see
      [Upload limits](#upload-limits).
 2. Open the website entry. It shows the **Site ID** and the **secret**.
-3. In WordPress, open **Settings → Live Chat for FreeScout**, enter the FreeScout URL, the Site ID
+3. Install the WordPress plugin: download `live-chat-for-freescout.zip` from the plugin's
+   [latest release](https://github.com/automaze-me/live-chat-for-freescout/releases/latest) and
+   upload it under **Plugins → Add New Plugin → Upload Plugin**. Later versions arrive through
+   WordPress's own updates.
+4. In WordPress, open **Settings → Live Chat for FreeScout**, enter the FreeScout URL, the Site ID
    and the secret, and save.
-4. Click **Test connection**. It tells you whether FreeScout knows the Site ID, whether the secret
+5. Click **Test connection**. It tells you whether FreeScout knows the Site ID, whether the secret
    matches, and whether the website's address matches the origin saved in FreeScout.
 
 The secret is what lets the plugin vouch for logged-in WordPress users and order numbers. If you
