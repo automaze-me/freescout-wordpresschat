@@ -3,14 +3,14 @@
 Live chat from WordPress websites as a channel for [FreeScout](https://freescout.net).
 
 This is the FreeScout half of the chat. The visitor-facing half is the WordPress plugin
-[Live Chat for FreeScout](https://github.com/automaze-me/live-chat-for-freescout), which shows
+[Website Chat for FreeScout](https://github.com/automaze-me/live-chat-for-freescout), which shows
 the chat widget on your website and talks to this module. A visitor's chat becomes a FreeScout conversation; agents reply from FreeScout as usual.
 A reply the visitor does not see in the chat within a short delay is sent to them by email, with
 a link that reopens the chat.
 
 ## Screenshots
 
-What a visitor sees: the Live Chat for FreeScout plugin shows the chat on a product page. The
+What a visitor sees: the Website Chat for FreeScout plugin shows the chat on a product page. The
 visitor left an email address, and the agent's replies arrive in the chat window.
 
 ![The chat widget on a WordPress shop page](docs/screenshots/widget.png)
@@ -96,12 +96,15 @@ regenerated.
    - **Max attachment size** – in MB (1 to 50; default 10). PHP's limits can lower it, see
      [Upload limits](#upload-limits).
 2. Open the website entry. It shows the **Site ID** and the **secret**.
-3. Install the WordPress plugin: download `live-chat-for-freescout.zip` from the plugin's
+3. Install the WordPress plugin Website Chat for FreeScout: in WordPress, open **Plugins → Add New
+   Plugin** and search for it. Until it is listed on wordpress.org, download
+   `website-chat-for-freescout.zip` from the plugin's
    [latest release](https://github.com/automaze-me/live-chat-for-freescout/releases/latest) and
    upload it under **Plugins → Add New Plugin → Upload Plugin**. Later versions arrive through
-   WordPress's own updates.
-4. In WordPress, open **Settings → Live Chat for FreeScout**, enter the FreeScout URL, the Site ID
-   and the secret, and save.
+   WordPress's own updates. Up to version 0.1.x the plugin was called "Live Chat for FreeScout";
+   its README describes the switch.
+4. In WordPress, open **Settings → Website Chat for FreeScout**, enter the FreeScout URL, the Site
+   ID and the secret, and save.
 5. Click **Test connection**. It tells you whether FreeScout knows the Site ID, whether the secret
    matches, and whether the website's address matches the origin saved in FreeScout.
 

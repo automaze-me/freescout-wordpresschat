@@ -71,7 +71,7 @@
             @if ($site->id)
             <hr>
             <h4>{{ __('Connection details') }}</h4>
-            <p class="text-help">{{ __('Enter these two values in the Live Chat for FreeScout plugin settings on your WordPress site.') }}</p>
+            <p class="text-help">{{ __('Enter these two values in the Website Chat for FreeScout plugin settings on your WordPress site.') }}</p>
 
             <div class="form-horizontal">
                 <div class="form-group">
