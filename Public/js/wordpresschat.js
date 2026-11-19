@@ -19,8 +19,32 @@
  * clears it in showReplyForm(), both from the .conv-add-note and .conv-reply
  * click handlers, which run after a capture-phase listener: the picker is
  * synced a tick later).
+ *
+ * Core 1.8.251 adds "Also send reply to customer by email" (.conv-chat-email)
+ * to the reply form of chat conversations. Where the picker is shown, it alone
+ * decides, so that checkbox is hidden and disabled (a disabled input is not
+ * serialized, and a form reset does not re-enable it). RouteReplyChannel drops
+ * core's flag on the server as well.
  */
 document.addEventListener('DOMContentLoaded', function () {
+    function retireCoreEmailCheckbox() {
+        if (!document.querySelector('[data-wpc-picker="1"]')) {
+            return;
+        }
+
+        var row = document.querySelector('.form-reply .conv-chat-email');
+        if (!row) {
+            return;
+        }
+
+        row.classList.add('hidden');
+        var box = row.querySelector('input[name="chat_send_email"]');
+        if (box) {
+            box.checked = false;
+            box.disabled = true;
+        }
+    }
+
     function copyChoiceIntoForm() {
         var picker = document.querySelector('[data-wpc-picker="1"]');
         if (!picker) {
@@ -74,6 +98,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }, true);
 
+    retireCoreEmailCheckbox();
     copyChoiceIntoForm();
     syncPickerWithNote();
 });

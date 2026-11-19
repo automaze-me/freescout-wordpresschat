@@ -32,6 +32,12 @@ class RouteReplyChannel
      * re-sending after Undo must not inherit the earlier choice, and core's
      * multi-recipient copy replicates the thread (meta included) before
      * this hook fires on the copy.
+     *
+     * Core 1.8.251 (#5799) adds "Also send reply to customer by email" to the
+     * reply form of chat conversations and flags the thread just before this
+     * hook. On our conversations the picker is the only channel control, so
+     * that flag is dropped: left in place, core would also email a reply the
+     * agent sent by chat (and our fallback email could follow on top).
      */
     public static function capture(Thread $thread, $request)
     {
@@ -43,6 +49,10 @@ class RouteReplyChannel
 
         if (!$conversation || !WordPressChat::isWebsiteChat($conversation)) {
             return;
+        }
+
+        if (defined(Thread::class.'::META_CHAT_SEND_EMAIL')) {
+            $thread->unsetMeta(Thread::META_CHAT_SEND_EMAIL);
         }
 
         $email = false;

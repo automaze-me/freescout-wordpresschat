@@ -130,7 +130,9 @@ core's replies. If it still fails, the agent sees a short reason in the conversa
 server refused the login (SMTP 535)", say); the log keeps the full error.
 
 Agents can also choose **Email** in the reply picker above the Send button to send a particular
-reply by email at once.
+reply by email at once. FreeScout 1.8.251 and newer add their own **Also send reply to customer by
+email** checkbox to chat conversations; the module hides it on website chats, so the picker alone
+decides and a chat reply is never also sent by email.
 
 If an email cannot be delivered because the mail server refuses the visitor's address at send time,
 the agent sees a red notice in the conversation ("Email to the visitor failed: the mail server
