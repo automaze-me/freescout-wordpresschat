@@ -3,7 +3,7 @@
 Live chat from WordPress websites as a channel for [FreeScout](https://freescout.net).
 
 This is the FreeScout half of the chat. The visitor-facing half is the WordPress plugin
-[Website Chat for FreeScout](https://github.com/automaze-me/live-chat-for-freescout), which shows
+[Website Chat for FreeScout](https://github.com/automaze-me/website-chat-for-freescout), which shows
 the chat widget on your website and talks to this module. A visitor's chat becomes a FreeScout conversation; agents reply from FreeScout as usual.
 A reply the visitor does not see in the chat within a short delay is sent to them by email, with
 a link that reopens the chat.
@@ -97,10 +97,9 @@ regenerated.
      [Upload limits](#upload-limits).
 2. Open the website entry. It shows the **Site ID** and the **secret**.
 3. Install the WordPress plugin Website Chat for FreeScout: in WordPress, open **Plugins → Add New
-   Plugin** and search for it. Until it is listed on wordpress.org, download
-   `website-chat-for-freescout.zip` from the plugin's
-   [latest release](https://github.com/automaze-me/live-chat-for-freescout/releases/latest) and
-   upload it under **Plugins → Add New Plugin → Upload Plugin**. Later versions arrive through
+   Plugin** and search for it. Until it is listed on wordpress.org, upload the zip of the plugin's
+   [latest release](https://github.com/automaze-me/website-chat-for-freescout/releases/latest) under
+   **Plugins → Add New Plugin → Upload Plugin** (that release is still 0.1.0, under the earlier name). Later versions arrive through
    WordPress's own updates. Up to version 0.1.x the plugin was called "Live Chat for FreeScout";
    its README describes the switch.
 4. In WordPress, open **Settings → Website Chat for FreeScout**, enter the FreeScout URL, the Site
