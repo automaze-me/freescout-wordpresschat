@@ -2,7 +2,7 @@
     "name": "Website Chat (WordPress)",
     "alias": "wordpresschat",
     "description": "Live chat from WordPress websites as a FreeScout channel, with automatic email follow-up.",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "detailsUrl": "https://github.com/automaze-me/freescout-wordpresschat",
     "author": "automaze.me",
     "authorUrl": "https://automaze.me",
